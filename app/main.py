@@ -19,7 +19,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from docxtpl import DocxTemplate
 
-app = FastAPI()
+app = FastAPI(title="Certificates Generator")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("certefikati")
 
@@ -27,12 +27,9 @@ logger = logging.getLogger("certefikati")
 def head_root():
     return Response(status_code=200)
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-app = FastAPI(title="Certificates Generator")
+@app.get("/")
+def root():
+    return {"message": "Certificates Generator API", "status": "ok"}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

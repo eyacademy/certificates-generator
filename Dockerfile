@@ -15,5 +15,6 @@ COPY app ./app
 COPY Templates ./Templates
 
 ENV PORT=10000
-CMD python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT}
+EXPOSE $PORT
+CMD python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
 
