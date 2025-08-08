@@ -519,9 +519,12 @@ def sanitize_filename(s: str) -> str:
 def docx_to_pdf_cached(docx_path: str) -> str:
     abs_docx = os.path.abspath(docx_path)
     if abs_docx in DOCX_TO_PDF_CACHE:
+        logger.info(f"Using cached PDF for {abs_docx}")
         return DOCX_TO_PDF_CACHE[abs_docx]
 
+    logger.info(f"Converting DOCX to PDF: {abs_docx}")
     out_dir = tempfile.mkdtemp(prefix="docx2pdf_")
+    logger.info(f"Output directory: {out_dir}")
     
     # Попробуем разные пути к LibreOffice
     libreoffice_paths = [
@@ -534,32 +537,46 @@ def docx_to_pdf_cached(docx_path: str) -> str:
     cmd = None
     for path in libreoffice_paths:
         try:
+            logger.info(f"Trying LibreOffice path: {path}")
             # Проверяем, существует ли файл
             if path == "soffice":
                 # Проверяем команду в PATH
                 test_cmd = ["soffice", "--version"]
                 subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
                 cmd = [path, "--headless", "--convert-to", "pdf", "--outdir", out_dir, abs_docx]
+                logger.info(f"LibreOffice found in PATH")
                 break
             elif os.path.exists(path):
                 cmd = [path, "--headless", "--convert-to", "pdf", "--outdir", out_dir, abs_docx]
+                logger.info(f"LibreOffice found at: {path}")
                 break
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.warning(f"LibreOffice not found at {path}: {e}")
             continue
     
     if cmd is None:
-        raise RuntimeError("LibreOffice not found. Please install LibreOffice and add it to PATH, or update the paths in the code.")
+        error_msg = "LibreOffice not found. Please install LibreOffice and add it to PATH, or update the paths in the code."
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
     
+    logger.info(f"Running command: {' '.join(cmd)}")
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
     if proc.returncode != 0:
-        raise RuntimeError(f"LibreOffice convert failed: {proc.stderr.decode(errors='ignore')}")
+        error_msg = f"LibreOffice convert failed: {proc.stderr.decode(errors='ignore')}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     pdf_path = os.path.join(
         out_dir, os.path.splitext(os.path.basename(abs_docx))[0] + ".pdf"
     )
+    
     if not os.path.exists(pdf_path):
-        raise RuntimeError("PDF not produced by LibreOffice")
+        error_msg = "PDF not produced by LibreOffice"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
+    logger.info(f"PDF successfully created: {pdf_path}")
     DOCX_TO_PDF_CACHE[abs_docx] = pdf_path
     return pdf_path
 
@@ -608,59 +625,115 @@ def merge_overlay(template_pdf_path: str, overlay_pdf_bytes: bytes) -> bytes:
 def health() -> PlainTextResponse:
     return PlainTextResponse("ok")
 
+@app.get("/check-templates")
+def check_templates():
+    """Проверяет доступность всех шаблонов"""
+    missing_templates = []
+    available_templates = []
+    
+    for group in ["print", "online"]:
+        for kind in ["duration_day", "2day_2month", "1day_1month"]:
+            for variant in ["normal", "small"]:
+                try:
+                    docx_name = DOCX_MAP[group][kind][variant]
+                    docx_path = os.path.join(TEMPLATES_DIR, docx_name)
+                    if os.path.exists(docx_path):
+                        available_templates.append(f"{group}/{kind}/{variant}: {docx_name}")
+                    else:
+                        missing_templates.append(f"{group}/{kind}/{variant}: {docx_name}")
+                except KeyError:
+                    missing_templates.append(f"{group}/{kind}/{variant}: NOT_FOUND_IN_MAP")
+    
+    return {
+        "available_templates": available_templates,
+        "missing_templates": missing_templates,
+        "templates_dir": TEMPLATES_DIR,
+        "templates_dir_exists": os.path.exists(TEMPLATES_DIR)
+    }
+
 
 @app.post("/generate")
 async def generate(
     csv_file: UploadFile = File(...),
     mode: str = Form(...),  # print | online
 ):
-    data = await csv_file.read()
-    txt = data.decode("utf-8-sig", errors="ignore")
-    reader = csv.DictReader(io.StringIO(txt))
+    try:
+        logger.info(f"Starting certificate generation for mode: {mode}")
+        
+        data = await csv_file.read()
+        txt = data.decode("utf-8-sig", errors="ignore")
+        reader = csv.DictReader(io.StringIO(txt))
+        
+        logger.info(f"CSV file loaded, processing rows...")
 
-    mem_zip = io.BytesIO()
-    with zipfile.ZipFile(mem_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        for row in reader:
-            is_online = (mode == "online")
+        mem_zip = io.BytesIO()
+        processed_count = 0
+        
+        with zipfile.ZipFile(mem_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            for row_num, row in enumerate(reader, 1):
+                try:
+                    is_online = (mode == "online")
 
-            course = (row.get("Название тренинга") or row.get("название тренинга") or "").strip()
-            dates_raw = (row.get("даты") or row.get("Даты") or "").strip()
-            first_name = (row.get("Имя") or row.get("имя") or "").strip()
-            last_name = (row.get("Фамилия") or row.get("фамилия") or "").strip()
-            cert_id = (row.get("ID") or row.get("id") or "").strip()
+                    course = (row.get("Название тренинга") or row.get("название тренинга") or "").strip()
+                    dates_raw = (row.get("даты") or row.get("Даты") or "").strip()
+                    first_name = (row.get("Имя") or row.get("имя") or "").strip()
+                    last_name = (row.get("Фамилия") or row.get("фамилия") or "").strip()
+                    cert_id = (row.get("ID") or row.get("id") or "").strip()
 
-            if not (course and dates_raw and first_name and last_name and cert_id):
-                continue
+                    logger.info(f"Processing row {row_num}: {first_name} {last_name}")
 
-            parsed = parse_dates(dates_raw)
-            kind = pick_kind(parsed)
-            use_small = need_small_variant(f"{first_name} {last_name}")
-            variant = "small" if use_small else "normal"
+                    if not (course and dates_raw and first_name and last_name and cert_id):
+                        logger.warning(f"Skipping row {row_num}: missing required fields")
+                        continue
 
-            group = "online" if is_online else "print"
-            docx_name = DOCX_MAP[group][kind][variant]
-            docx_path = os.path.join(TEMPLATES_DIR, docx_name)
-            if not os.path.exists(docx_path):
-                raise FileNotFoundError(f"Template not found: {docx_path}")
+                    parsed = parse_dates(dates_raw)
+                    kind = pick_kind(parsed)
+                    use_small = need_small_variant(f"{first_name} {last_name}")
+                    variant = "small" if use_small else "normal"
 
-            # Подготавливаем контекст для Jinja
-            context = format_dates_for_jinja(parsed)
-            context.update({
-                "Имя": first_name,
-                "Фамилия": last_name,
-                "Тренинг": course,
-            })
+                    group = "online" if is_online else "print"
+                    docx_name = DOCX_MAP[group][kind][variant]
+                    docx_path = os.path.join(TEMPLATES_DIR, docx_name)
+                    
+                    logger.info(f"Using template: {docx_path}")
+                    
+                    if not os.path.exists(docx_path):
+                        logger.error(f"Template not found: {docx_path}")
+                        raise FileNotFoundError(f"Template not found: {docx_path}")
 
-            # Рендерим DOCX с Jinja и конвертируем в PDF
-            final_pdf = render_docx_template(docx_path, context)
+                    # Подготавливаем контекст для Jinja
+                    context = format_dates_for_jinja(parsed)
+                    context.update({
+                        "Имя": first_name,
+                        "Фамилия": last_name,
+                        "Тренинг": course,
+                    })
 
-            filename = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-            zf.writestr(filename, final_pdf)
+                    logger.info(f"Rendering certificate for {first_name} {last_name}")
+                    
+                    # Рендерим DOCX с Jinja и конвертируем в PDF
+                    final_pdf = render_docx_template(docx_path, context)
 
-    mem_zip.seek(0)
-    return StreamingResponse(
-        mem_zip,
-        media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=certificates.zip"},
-    )
+                    filename = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                    zf.writestr(filename, final_pdf)
+                    processed_count += 1
+                    
+                    logger.info(f"Successfully processed certificate {processed_count}")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing row {row_num}: {str(e)}")
+                    raise
+
+        logger.info(f"Generation completed. Processed {processed_count} certificates")
+        
+        mem_zip.seek(0)
+        return StreamingResponse(
+            mem_zip,
+            media_type="application/zip",
+            headers={"Content-Disposition": "attachment; filename=certificates.zip"},
+        )
+        
+    except Exception as e:
+        logger.error(f"Generation failed: {str(e)}")
+        raise
 
