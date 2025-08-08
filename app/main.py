@@ -29,7 +29,268 @@ def head_root():
 
 @app.get("/")
 def root():
-    return {"message": "Certificates Generator API", "status": "ok"}
+    return HTMLResponse(content="""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Генератор сертификатов</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        .btn { display: inline-block; padding: 15px 30px; background: #007bff; color: white; 
+               text-decoration: none; border-radius: 5px; margin: 10px; }
+        .btn:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Генератор сертификатов</h1>
+        <p>API для генерации сертификатов на основе CSV файлов</p>
+        <a href="/ui" class="btn">Открыть веб-интерфейс</a>
+        <a href="/docs" class="btn">API документация</a>
+        <a href="/health" class="btn">Проверка здоровья</a>
+    </div>
+</body>
+</html>
+    """)
+
+@app.get("/ui")
+def ui():
+    html_content = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Генератор сертификатов</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 2px dashed #ddd;
+            border-radius: 5px;
+            background: #fafafa;
+        }
+        .radio-group {
+            display: flex;
+            gap: 20px;
+            margin-top: 10px;
+        }
+        .radio-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        input[type="radio"] {
+            margin: 0;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            margin-top: 20px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .progress {
+            width: 100%;
+            height: 20px;
+            background: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 10px;
+            display: none;
+        }
+        .progress-bar {
+            height: 100%;
+            background: #007bff;
+            width: 0%;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Генератор сертификатов</h1>
+        
+        <form id="certificateForm">
+            <div class="form-group">
+                <label for="csvFile">Выберите CSV файл:</label>
+                <input type="file" id="csvFile" name="csv_file" accept=".csv" required>
+                <div id="fileStatus">Файл не выбран</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Тип сертификата:</label>
+                <div class="radio-group">
+                    <div class="radio-item">
+                        <input type="radio" id="print" name="mode" value="print" checked>
+                        <label for="print">Печать</label>
+                    </div>
+                    <div class="radio-item">
+                        <input type="radio" id="online" name="mode" value="online">
+                        <label for="online">Онлайн</label>
+                    </div>
+                </div>
+            </div>
+            
+            <button type="submit" id="generateBtn">Сгенерировать</button>
+        </form>
+        
+        <div class="progress" id="progress">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+        
+        <div class="status" id="status"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('certificateForm');
+        const fileInput = document.getElementById('csvFile');
+        const fileStatus = document.getElementById('fileStatus');
+        const generateBtn = document.getElementById('generateBtn');
+        const progress = document.getElementById('progress');
+        const progressBar = document.getElementById('progressBar');
+        const status = document.getElementById('status');
+
+        fileInput.addEventListener('change', function() {
+            if (this.files.length > 0) {
+                fileStatus.textContent = `Выбран файл: ${this.files[0].name}`;
+                fileStatus.style.color = '#28a745';
+            } else {
+                fileStatus.textContent = 'Файл не выбран';
+                fileStatus.style.color = '#dc3545';
+            }
+        });
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData();
+            const file = fileInput.files[0];
+            const mode = document.querySelector('input[name="mode"]:checked').value;
+            
+            if (!file) {
+                showStatus('Пожалуйста, выберите CSV файл', 'error');
+                return;
+            }
+            
+            formData.append('csv_file', file);
+            formData.append('mode', mode);
+            
+            generateBtn.disabled = true;
+            generateBtn.textContent = 'Генерация...';
+            progress.style.display = 'block';
+            status.style.display = 'none';
+            
+            try {
+                const response = await fetch('/generate', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'certificates.zip';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    
+                    showStatus('Сертификаты успешно сгенерированы!', 'success');
+                } else {
+                    const errorText = await response.text();
+                    showStatus(`Ошибка: ${errorText}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`Ошибка сети: ${error.message}`, 'error');
+            } finally {
+                generateBtn.disabled = false;
+                generateBtn.textContent = 'Сгенерировать';
+                progress.style.display = 'none';
+            }
+        });
+
+        function showStatus(message, type) {
+            status.textContent = message;
+            status.className = `status ${type}`;
+            status.style.display = 'block';
+        }
+
+        // Анимация прогресса
+        let progressValue = 0;
+        const progressInterval = setInterval(() => {
+            if (progress.style.display === 'block') {
+                progressValue += Math.random() * 15;
+                if (progressValue > 90) progressValue = 90;
+                progressBar.style.width = progressValue + '%';
+            } else {
+                progressValue = 0;
+                progressBar.style.width = '0%';
+            }
+        }, 200);
+    </script>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html_content)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
