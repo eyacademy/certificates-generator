@@ -29,31 +29,8 @@ def head_root():
 
 @app.get("/")
 def root():
-    return HTMLResponse(content="""
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Генератор сертификатов</title>
-    <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
-        .container { max-width: 600px; margin: 0 auto; }
-        .btn { display: inline-block; padding: 15px 30px; background: #007bff; color: white; 
-               text-decoration: none; border-radius: 5px; margin: 10px; }
-        .btn:hover { background: #0056b3; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Генератор сертификатов</h1>
-        <p>API для генерации сертификатов на основе CSV файлов</p>
-        <a href="/ui" class="btn">Открыть веб-интерфейс</a>
-        <a href="/docs" class="btn">API документация</a>
-        <a href="/health" class="btn">Проверка здоровья</a>
-    </div>
-</body>
-</html>
-    """)
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/ui")
 
 @app.get("/ui")
 def ui():
