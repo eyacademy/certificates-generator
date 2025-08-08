@@ -5,6 +5,8 @@ import re
 import zipfile
 import tempfile
 import subprocess
+import logging
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form
@@ -16,6 +18,18 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from docxtpl import DocxTemplate
+
+app = FastAPI()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("certefikati")
+
+@app.head("/")
+def head_root():
+    return Response(status_code=200)
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 app = FastAPI(title="Certificates Generator")
