@@ -1347,104 +1347,92 @@ async def generate(
         mem_zip = io.BytesIO()
         processed_count = 0
         loop = asyncio.get_event_loop()
-        executor = ThreadPoolExecutor(max_workers=4)
         tasks = []
-        with zipfile.ZipFile(mem_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-            for row_num, row in enumerate(rows_list, 1):
-                try:
-                    is_online = (mode == "online")
+        # Снижаем параллелизм конвертаций LibreOffice для стабильности
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            with zipfile.ZipFile(mem_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+                for row_num, row in enumerate(rows_list, 1):
+                    try:
+                        is_online = (mode == "online")
 
-                    # Унифицированное извлечение значений с учетом комбинированных заголовков
-                    course = _get_field(row, "course")
-                    dates_raw = _get_field(row, "dates")
-                    first_name = _get_field(row, "first_name")
-                    last_name = _get_field(row, "last_name")
-                    cert_id = _get_field(row, "id")
-                    city = _get_field(row, "city")
-                    country = _get_field(row, "country")
+                        # Унифицированное извлечение значений с учетом комбинированных заголовков
+                        course = _get_field(row, "course")
+                        dates_raw = _get_field(row, "dates")
+                        first_name = _get_field(row, "first_name")
+                        last_name = _get_field(row, "last_name")
+                        cert_id = _get_field(row, "id")
+                        city = _get_field(row, "city")
+                        country = _get_field(row, "country")
 
-                    if not (course and dates_raw and first_name and last_name and cert_id):
-                        logger.warning(f"Skipping row {row_num}: missing required fields")
+                        if not (course and dates_raw and first_name and last_name and cert_id):
+                            logger.warning(f"Skipping row {row_num}: missing required fields")
+                            continue
+
+                        parsed = parse_dates(dates_raw)
+                        kind = pick_kind(parsed)
+                        use_small = need_small_variant(f"{first_name} {last_name}")
+                        variant = "small" if use_small else "normal"
+
+                        group = "online" if is_online else "print"
+                        docx_name = DOCX_MAP[group][kind][variant]
+                        docx_path = os.path.join(TEMPLATES_DIR, docx_name)
+                        if not os.path.exists(docx_path):
+                            raise FileNotFoundError(f"Template not found: {docx_path}")
+
+                        if not is_online:
+                            # Важное требование: PDF «точь‑в‑точь» как в DOCX-шаблоне.
+                            # Поэтому для печати тоже рендерим DOCX через DocxTemplate и конвертируем в PDF.
+                            context = format_dates_for_jinja(parsed)
+                            context.update({
+                                "Имя": first_name,
+                                "Фамилия": last_name,
+                                "Тренинг": course,
+                                "Идентификатор": cert_id,
+                                "Город": city or context.get("Город", "Москва"),
+                                "Страна": country,
+                            })
+
+                            async def render_print_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
+                                pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
+                                fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                                return fname, pdf_bytes
+
+                            tasks.append(render_print_one())
+                        else:
+                            # Режим online: оставляем рендер через DocxTemplate + LibreOffice
+                            context = format_dates_for_jinja(parsed)
+                            context.update({
+                                "Имя": first_name,
+                                "Фамилия": last_name,
+                                "Тренинг": course,
+                                "Идентификатор": cert_id,
+                                "Город": city or context.get("Город", "Москва"),
+                                "Страна": country,
+                            })
+
+                            async def render_online_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
+                                pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
+                                fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                                return fname, pdf_bytes
+
+                            tasks.append(render_online_one())
+                    except Exception as e:
+                        logger.error(f"Error preparing row {row_num}: {str(e)}")
+                        if state:
+                            state.errors += 1
+                            state.message = f"Ошибка в строке {row_num}"
+                            await emit(job_id)
                         continue
 
-                    parsed = parse_dates(dates_raw)
-                    kind = pick_kind(parsed)
-                    use_small = need_small_variant(f"{first_name} {last_name}")
-                    variant = "small" if use_small else "normal"
-
-                    group = "online" if is_online else "print"
-                    docx_name = DOCX_MAP[group][kind][variant]
-                    docx_path = os.path.join(TEMPLATES_DIR, docx_name)
-                    if not os.path.exists(docx_path):
-                        raise FileNotFoundError(f"Template not found: {docx_path}")
-
-                    if not is_online:
-                        # Режим печати: используем готовый PDF-фон + наложение текста (без LibreOffice на каждую строку)
-                        template_pdf_path = get_template_pdf_path(docx_name)
-
-                        async def render_print_one(template_pdf_path=template_pdf_path, first_name=first_name, last_name=last_name,
-                                                   course=course, parsed=parsed, cert_id=cert_id, variant=variant, city=city):
-                            # Получаем размеры страницы из шаблона
-                            base_reader = PdfReader(template_pdf_path)
-                            page = base_reader.pages[0]
-                            page_w = float(page.mediabox.width)
-                            page_h = float(page.mediabox.height)
-                            overlay_bytes = await loop.run_in_executor(
-                                executor,
-                                build_overlay_pdf_bytes,
-                                first_name,
-                                last_name,
-                                course,
-                                parsed,
-                                cert_id,
-                                variant,
-                                page_w,
-                                page_h,
-                                "print",
-                                city,
-                                None,
-                                False,
-                            )
-                            merged = await loop.run_in_executor(executor, merge_overlay, template_pdf_path, overlay_bytes)
-                            fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                            return fname, merged
-
-                        tasks.append(render_print_one())
-                    else:
-                        # Режим online: оставляем рендер через DocxTemplate + LibreOffice
-                        context = format_dates_for_jinja(parsed)
-                        context.update({
-                            "Имя": first_name,
-                            "Фамилия": last_name,
-                            "Тренинг": course,
-                            "Идентификатор": cert_id,
-                            "Город": city or context.get("Город", "Москва"),
-                            "Страна": country,
-                        })
-
-                        async def render_online_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
-                            pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
-                            fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                            return fname, pdf_bytes
-
-                        tasks.append(render_online_one())
-                except Exception as e:
-                    logger.error(f"Error preparing row {row_num}: {str(e)}")
+                # Сбор результатов (по мере готовности)
+                async for fut in _as_completed_iter(tasks):
+                    fname, pdf_bytes = await fut
+                    zf.writestr(fname, pdf_bytes)
+                    processed_count += 1
                     if state:
-                        state.errors += 1
-                        state.message = f"Ошибка в строке {row_num}"
+                        state.processed = processed_count
+                        state.message = f"Готово {processed_count} из {total}"
                         await emit(job_id)
-                    continue
-
-            # Сбор результатов (по мере готовности)
-            async for fut in _as_completed_iter(tasks):
-                fname, pdf_bytes = await fut
-                zf.writestr(fname, pdf_bytes)
-                processed_count += 1
-                if state:
-                    state.processed = processed_count
-                    state.message = f"Готово {processed_count} из {total}"
-                    await emit(job_id)
 
         logger.info(f"Generation completed. Processed {processed_count} certificates")
 
