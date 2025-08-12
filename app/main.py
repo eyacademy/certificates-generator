@@ -214,7 +214,7 @@ def ui():
             }
         });
 
-        form.addEventListener('submit', async function(e) {
+    form.addEventListener('submit', async function(e) {
             e.preventDefault();
             
             const formData = new FormData();
@@ -248,10 +248,12 @@ def ui():
                     if (sseStage === 'processing' || sseStage === 'zipping') {
                         updateProgress(data.percent || 0);
                         setInfo(`${data.message || ''} (${data.processed || 0}/${data.total || 0})`);
-                    } else if (sseStage === 'uploading') {
-                        setInfo('Загрузка файла...');
                     } else if (sseStage === 'done') {
                         setInfo('Подготовка к скачиванию...');
+                        // Как только фон завершился — забираем архив
+                        downloadZip(jobId);
+                    } else if (sseStage === 'uploading') {
+                        setInfo('Загрузка файла...');
                     } else if (sseStage === 'error') {
                         setInfo(data.message || 'Ошибка');
                     }
@@ -267,11 +269,11 @@ def ui():
                 es.close();
             };
 
-            // Отправляем XHR, чтобы показать реальную загрузку и скачивание
+            // Отправляем XHR на асинхронную генерацию, чтобы не зависеть от таймаутов Render
             try {
                 const xhr = new XMLHttpRequest();
-                xhr.open('POST', '/generate');
-                xhr.responseType = 'blob';
+                xhr.open('POST', '/generate-async');
+                xhr.responseType = 'json';
 
                 // Прогресс загрузки файла на сервер
                 xhr.upload.onprogress = (e) => {
@@ -284,52 +286,15 @@ def ui():
                     }
                 };
 
-                // Прогресс скачивания ответа (ZIP)
-                xhr.onprogress = (e) => {
-                    if (sseStage === 'done' || sseStage === 'zipping') {
-                        if (e.lengthComputable) {
-                            const pct = Math.round((e.loaded / e.total) * 100);
-                            updateProgress(pct);
-                            setInfo(`Скачивание архива: ${pct}%`);
-                        } else {
-                            setInfo('Скачивание архива...');
-                        }
-                    }
-                };
-
                 xhr.onload = () => {
-                    const contentType = xhr.getResponseHeader('Content-Type') || '';
                     if (xhr.status !== 200) {
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                            showStatus(`Ошибка: ${reader.result}`, 'error');
-                        };
-                        reader.readAsText(xhr.response);
+                        const text = typeof xhr.response === 'string' ? xhr.response : (xhr.response?.detail || 'Ошибка запуска');
+                        showStatus(`Ошибка: ${text}`, 'error');
                         cleanup();
                         return;
                     }
-                    if (!contentType.includes('application/zip')) {
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                            showStatus(`Получен неожиданный ответ (не ZIP). Тип: ${contentType}. Текст: ${String(reader.result).slice(0,200)}...`, 'error');
-                        };
-                        reader.readAsText(xhr.response);
-                        cleanup();
-                        return;
-                    }
-                    const blob = xhr.response;
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'certificates.zip';
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    window.URL.revokeObjectURL(url);
-                    updateProgress(100);
-                    setInfo('Готово');
-                    showStatus('Сертификаты успешно сгенерированы!', 'success');
-                    cleanup();
+                    // Дальше ждём событие 'done' по SSE и качаем через /download/{jobId}
+                    setInfo('Файл загружен, идёт обработка...');
                 };
                 xhr.onerror = () => {
                     showStatus('Сетевая ошибка при запросе', 'error');
@@ -340,24 +305,6 @@ def ui():
                 showStatus(`Ошибка сети: ${error.message}`, 'error');
                 cleanup();
             }
-
-            function updateProgress(pct) {
-                progressBar.style.width = (pct || 0) + '%';
-            }
-            function setInfo(text) {
-                progressInfo.textContent = text || '';
-            }
-            function cleanup() {
-                generateBtn.disabled = false;
-                generateBtn.textContent = 'Сгенерировать';
-                // Оставим прогресс видимым кратко, затем спрячем
-                setTimeout(() => {
-                    progress.style.display = 'none';
-                    progressInfo.style.display = 'none';
-                    updateProgress(0);
-                    setInfo('');
-                }, 800);
-            }
         });
 
         function showStatus(message, type) {
@@ -366,7 +313,55 @@ def ui():
             status.style.display = 'block';
         }
 
-    // Убрали фейковую анимацию: прогресс теперь реальный (SSE + XHR)
+        // Глобальные хелперы прогресса, чтобы были доступны и вне submit-обработчика
+        function updateProgress(pct) {
+            progressBar.style.width = (pct || 0) + '%';
+        }
+        function setInfo(text) {
+            progressInfo.textContent = text || '';
+        }
+
+        // Делаем cleanup глобальным для обработчика submit и downloadZip
+        function cleanup() {
+            generateBtn.disabled = false;
+            generateBtn.textContent = 'Сгенерировать';
+            // Оставим прогресс видимым кратко, затем спрячем
+            setTimeout(() => {
+                progress.style.display = 'none';
+                progressInfo.style.display = 'none';
+                progressBar.style.width = '0%';
+                progressInfo.textContent = '';
+            }, 800);
+        }
+
+    async function downloadZip(jobId) {
+            try {
+                const res = await fetch(`/download/${jobId}`);
+                if (!res.ok) {
+                    // Ещё не готово — попробуем чуть позже
+                    setTimeout(() => downloadZip(jobId), 1500);
+                    return;
+                }
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'certificates.zip';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                updateProgress(100);
+                setInfo('Готово');
+                showStatus('Сертификаты успешно сгенерированы!', 'success');
+                cleanup();
+            } catch (e) {
+                showStatus('Ошибка при скачивании результата', 'error');
+                cleanup();
+            }
+        }
+
+    // Убрали фейковую анимацию: прогресс теперь реальный (SSE + XHR async)
     </script>
 </body>
 </html>
@@ -1179,6 +1174,9 @@ class ProgressState:
 
 PROGRESS: Dict[str, ProgressState] = {}
 
+# Готовые архивы по job_id (храним краткосрочно, очищаем после скачивания)
+JOB_RESULTS: Dict[str, bytes] = {}
+
 
 def get_progress(job_id: str) -> ProgressState:
     if job_id not in PROGRESS:
@@ -1284,7 +1282,7 @@ async def generate(
         logger.info(f"Starting certificate generation for mode: {mode}")
 
         # Привяжем состояние прогресса
-        state = None
+        state: Optional[ProgressState] = None
         if job_id:
             state = get_progress(job_id)
             state.stage = "uploading"
@@ -1295,11 +1293,13 @@ async def generate(
         data = await csv_file.read()
 
         filename = (csv_file.filename or '').lower()
+        # только для диагностики (отображение доступных колонок при 0 валидных строк)
         incoming_fields: List[str] = []
         rows_list: List[Dict[str, str]] = []
         txt = ''
         delim = ','
 
+        # Парсим входные данные
         if filename.endswith('.xlsx') or filename.endswith('.xlsm'):
             if not HAS_XLSX:
                 raise RuntimeError('Поддержка Excel не установлена на сервере')
@@ -1317,7 +1317,6 @@ async def generate(
                     if tech or len(non_empty) < 3:
                         continue
                     headers = candidate
-                    incoming_fields = headers[:]
                     continue
                 d: Dict[str, str] = {}
                 for idx, h in enumerate(headers):
@@ -1332,6 +1331,7 @@ async def generate(
             if not txt:
                 raise ValueError('CSV пустой или нераспознанный формат')
             dict_reader = csv.DictReader(io.StringIO(txt), delimiter=delim)
+            # сохраняем для возможной диагностики
             incoming_fields = list(dict_reader.fieldnames or [])
             rows_list = [row for row in dict_reader]
 
@@ -1379,43 +1379,23 @@ async def generate(
                         if not os.path.exists(docx_path):
                             raise FileNotFoundError(f"Template not found: {docx_path}")
 
-                        if not is_online:
-                            # Важное требование: PDF «точь‑в‑точь» как в DOCX-шаблоне.
-                            # Поэтому для печати тоже рендерим DOCX через DocxTemplate и конвертируем в PDF.
-                            context = format_dates_for_jinja(parsed)
-                            context.update({
-                                "Имя": first_name,
-                                "Фамилия": last_name,
-                                "Тренинг": course,
-                                "Идентификатор": cert_id,
-                                "Город": city or context.get("Город", "Москва"),
-                                "Страна": country,
-                            })
+                        # Рендер для обоих режимов через DocxTemplate + LibreOffice (точное совпадение с DOCX)
+                        context = format_dates_for_jinja(parsed)
+                        context.update({
+                            "Имя": first_name,
+                            "Фамилия": last_name,
+                            "Тренинг": course,
+                            "Идентификатор": cert_id,
+                            "Город": city or context.get("Город", "Москва"),
+                            "Страна": country,
+                        })
 
-                            async def render_print_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
-                                pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
-                                fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                                return fname, pdf_bytes
+                        async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
+                            pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
+                            fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                            return fname, pdf_bytes
 
-                            tasks.append(render_print_one())
-                        else:
-                            # Режим online: оставляем рендер через DocxTemplate + LibreOffice
-                            context = format_dates_for_jinja(parsed)
-                            context.update({
-                                "Имя": first_name,
-                                "Фамилия": last_name,
-                                "Тренинг": course,
-                                "Идентификатор": cert_id,
-                                "Город": city or context.get("Город", "Москва"),
-                                "Страна": country,
-                            })
-
-                            async def render_online_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
-                                pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
-                                fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                                return fname, pdf_bytes
-
-                            tasks.append(render_online_one())
+                        tasks.append(render_one())
                     except Exception as e:
                         logger.error(f"Error preparing row {row_num}: {str(e)}")
                         if state:
@@ -1492,4 +1472,194 @@ async def _as_completed_iter(coros):
     """Асинхронный итератор по завершению задач (обертка вокруг asyncio.as_completed)."""
     for fut in asyncio.as_completed(coros):
         yield fut
+
+
+@app.post("/generate-async")
+async def generate_async(
+    csv_file: UploadFile = File(...),
+    mode: str = Form(...),  # print | online
+    job_id: Optional[str] = Form(None),
+):
+    """Асинхронная версия генерации: сразу возвращает job_id, обработка идёт в фоне,
+    результат скачивается с /download/{job_id}. Это обходит таймауты Render для долгих запросов.
+    """
+    try:
+        logger.info(f"Starting ASYNC certificate generation for mode: {mode}")
+
+        # Прогресс
+        if not job_id:
+            job_id = f"job-{int(time.time())}-{os.getpid()}-{id(csv_file)}"
+        state = get_progress(job_id)
+        state.stage = "uploading"
+        state.message = "Загрузка файла"
+        await emit(job_id)
+
+        data = await csv_file.read()
+
+        filename = (csv_file.filename or '').lower()
+        rows_list: List[Dict[str, str]] = []
+
+        # Парсим файл (скопировано из синхронной версии)
+        if filename.endswith('.xlsx') or filename.endswith('.xlsm'):
+            if not HAS_XLSX:
+                raise RuntimeError('Поддержка Excel не установлена на сервере')
+            wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            ws = wb.active
+            headers: List[str] = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                cells = [(c if c is not None else '') for c in row]
+                if not any(str(c).strip() for c in cells):
+                    continue
+                if not headers:
+                    candidate = [str(c).strip() for c in cells]
+                    tech = all(h.lower().startswith('column') or h.lower().startswith('unnamed') or h == '' for h in candidate)
+                    non_empty = [h for h in candidate if h]
+                    if tech or len(non_empty) < 3:
+                        continue
+                    headers = candidate
+                    continue
+                d: Dict[str, str] = {}
+                for idx, h in enumerate(headers):
+                    val = '' if idx >= len(cells) or cells[idx] is None else str(cells[idx])
+                    d[h] = val
+                rows_list.append(d)
+            if not headers or not rows_list:
+                raise ValueError('Excel: нераспознан заголовок или нет данных')
+        else:
+            raw_txt = data.decode('utf-8-sig', errors='ignore')
+            txt, delim = normalize_csv_and_get_delimiter(raw_txt)
+            if not txt:
+                raise ValueError('CSV пустой или нераспознанный формат')
+            dict_reader = csv.DictReader(io.StringIO(txt), delimiter=delim)
+            rows_list = [row for row in dict_reader]
+
+        # Инициализируем прогресс
+        total = len(rows_list)
+        state.total = total
+        state.processed = 0
+        state.stage = "processing"
+        state.message = "Обработка строк"
+        await emit(job_id)
+
+        async def worker():
+            try:
+                mem_zip = io.BytesIO()
+                processed_count = 0
+                loop = asyncio.get_event_loop()
+                tasks = []
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    with zipfile.ZipFile(mem_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for row_num, row in enumerate(rows_list, 1):
+                            try:
+                                is_online = (mode == "online")
+
+                                course = _get_field(row, "course")
+                                dates_raw = _get_field(row, "dates")
+                                first_name = _get_field(row, "first_name")
+                                last_name = _get_field(row, "last_name")
+                                cert_id = _get_field(row, "id")
+                                city = _get_field(row, "city")
+                                country = _get_field(row, "country")
+
+                                if not (course and dates_raw and first_name and last_name and cert_id):
+                                    logger.warning(f"Skipping row {row_num}: missing required fields")
+                                    continue
+
+                                parsed = parse_dates(dates_raw)
+                                kind = pick_kind(parsed)
+                                use_small = need_small_variant(f"{first_name} {last_name}")
+                                variant = "small" if use_small else "normal"
+
+                                group = "online" if is_online else "print"
+                                docx_name = DOCX_MAP[group][kind][variant]
+                                docx_path = os.path.join(TEMPLATES_DIR, docx_name)
+                                if not os.path.exists(docx_path):
+                                    raise FileNotFoundError(f"Template not found: {docx_path}")
+
+                                context = format_dates_for_jinja(parsed)
+                                context.update({
+                                    "Имя": first_name,
+                                    "Фамилия": last_name,
+                                    "Тренинг": course,
+                                    "Идентификатор": cert_id,
+                                    "Город": city or context.get("Город", "Москва"),
+                                    "Страна": country,
+                                })
+
+                                async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
+                                    pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
+                                    fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                                    return fname, pdf_bytes
+
+                                tasks.append(render_one())
+                            except Exception as e:
+                                logger.error(f"Error preparing row {row_num}: {str(e)}")
+                                state.errors += 1
+                                state.message = f"Ошибка в строке {row_num}"
+                                await emit(job_id)
+                                continue
+
+                        async for fut in _as_completed_iter(tasks):
+                            fname, pdf_bytes = await fut
+                            zf.writestr(fname, pdf_bytes)
+                            processed_count += 1
+                            state.processed = processed_count
+                            state.message = f"Готово {processed_count} из {total}"
+                            await emit(job_id)
+
+                logger.info(f"ASYNC generation completed. Processed {processed_count} certificates")
+
+                if processed_count == 0:
+                    state.stage = "error"
+                    state.message = "Нет валидных строк"
+                    await emit(job_id)
+                    return
+
+                mem_zip.seek(0)
+                zip_bytes = mem_zip.getvalue()
+                JOB_RESULTS[job_id] = zip_bytes
+                state.stage = "zipping"
+                state.message = "Упаковка ZIP"
+                await emit(job_id)
+
+                state.stage = "done"
+                state.message = "Готово"
+                await emit(job_id)
+            except Exception as e:
+                logger.error(f"ASYNC Generation failed: {str(e)}")
+                state.stage = "error"
+                state.message = str(e)
+                await emit(job_id)
+
+        # Запускаем обработку в фоне
+        asyncio.create_task(worker())
+
+        # Возвращаем job_id сразу
+        return {"job_id": job_id}
+
+    except Exception as e:
+        logger.error(f"generate-async init failed: {str(e)}")
+        if job_id:
+            state = get_progress(job_id)
+            state.stage = "error"
+            state.message = str(e)
+            await emit(job_id)
+        return PlainTextResponse(str(e), status_code=400)
+
+
+@app.get("/download/{job_id}")
+def download_result(job_id: str):
+    data = JOB_RESULTS.get(job_id)
+    if not data:
+        return PlainTextResponse("Результат не готов или истёк", status_code=404)
+    # Можно очищать сразу после одной выдачи
+    try:
+        del JOB_RESULTS[job_id]
+    except Exception:
+        pass
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=certificates.zip"},
+    )
 
