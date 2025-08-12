@@ -518,18 +518,18 @@ LAYOUT_BASE = {
 }
 
 MONTH_GEN = {
-    1: "января",
-    2: "февраля",
-    3: "марта",
-    4: "апреля",
-    5: "мая",
-    6: "июня",
-    7: "июля",
-    8: "августа",
-    9: "сентября",
-    10: "октября",
-    11: "ноября",
-    12: "декабря",
+    1: "January",
+    2: "February",
+    3: "March",
+    4: "April",
+    5: "May",
+    6: "June",
+    7: "July",
+    8: "August",
+    9: "September",
+    10: "October",
+    11: "November",
+    12: "December",
 }
 
 
@@ -709,9 +709,9 @@ def parse_dates(s: str) -> Dict[str, Optional[int]]:
         y = __import__("datetime").datetime.now().year
 
     months_tokens = [
-        ("январ", 1), ("феврал", 2), ("март", 3), ("апрел", 4),
-        ("ма", 5), ("июн", 6), ("июл", 7), ("август", 8),
-        ("сентябр", 9), ("октябр", 10), ("ноябр", 11), ("декабр", 12),
+        ("January", 1), ("February", 2), ("March", 3), ("April", 4), 
+        ("May", 5), ("June", 6), ("July", 7), ("August", 8), 
+        ("September", 9), ("October", 10), ("November", 11), ("December", 12),
     ]
 
     def detect_month(token: str) -> Optional[int]:
