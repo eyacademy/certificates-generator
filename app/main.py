@@ -1349,7 +1349,6 @@ async def generate(
         loop = asyncio.get_event_loop()
         executor = ThreadPoolExecutor(max_workers=4)
         tasks = []
-
         with zipfile.ZipFile(mem_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             for row_num, row in enumerate(rows_list, 1):
                 try:
@@ -1379,22 +1378,56 @@ async def generate(
                     if not os.path.exists(docx_path):
                         raise FileNotFoundError(f"Template not found: {docx_path}")
 
-                    context = format_dates_for_jinja(parsed)
-                    context.update({
-                        "Имя": first_name,
-                        "Фамилия": last_name,
-                        "Тренинг": course,
-                        "Идентификатор": cert_id,
-                        "Город": city or context.get("Город", "Москва"),
-                        "Страна": country,
-                    })
+                    if not is_online:
+                        # Режим печати: используем готовый PDF-фон + наложение текста (без LibreOffice на каждую строку)
+                        template_pdf_path = get_template_pdf_path(docx_name)
 
-                    async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
-                        pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
-                        fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                        return fname, pdf_bytes
+                        async def render_print_one(template_pdf_path=template_pdf_path, first_name=first_name, last_name=last_name,
+                                                   course=course, parsed=parsed, cert_id=cert_id, variant=variant, city=city):
+                            # Получаем размеры страницы из шаблона
+                            base_reader = PdfReader(template_pdf_path)
+                            page = base_reader.pages[0]
+                            page_w = float(page.mediabox.width)
+                            page_h = float(page.mediabox.height)
+                            overlay_bytes = await loop.run_in_executor(
+                                executor,
+                                build_overlay_pdf_bytes,
+                                first_name,
+                                last_name,
+                                course,
+                                parsed,
+                                cert_id,
+                                variant,
+                                page_w,
+                                page_h,
+                                "print",
+                                city,
+                                None,
+                                False,
+                            )
+                            merged = await loop.run_in_executor(executor, merge_overlay, template_pdf_path, overlay_bytes)
+                            fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                            return fname, merged
 
-                    tasks.append(render_one())
+                        tasks.append(render_print_one())
+                    else:
+                        # Режим online: оставляем рендер через DocxTemplate + LibreOffice
+                        context = format_dates_for_jinja(parsed)
+                        context.update({
+                            "Имя": first_name,
+                            "Фамилия": last_name,
+                            "Тренинг": course,
+                            "Идентификатор": cert_id,
+                            "Город": city or context.get("Город", "Москва"),
+                            "Страна": country,
+                        })
+
+                        async def render_online_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
+                            pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
+                            fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                            return fname, pdf_bytes
+
+                        tasks.append(render_online_one())
                 except Exception as e:
                     logger.error(f"Error preparing row {row_num}: {str(e)}")
                     if state:
