@@ -538,6 +538,83 @@ MONTH_GEN = {
 }
 
 
+# ------------------------------------------------------------
+# Нормализация заголовков и поиск значений в строке
+# Поддерживаем варианты вида "Имя/Name", "Фамилия/Surname", и т.д.
+# ------------------------------------------------------------
+
+def _norm_key(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    s = s.replace("ё", "е")
+    return s
+
+
+# Карта алиасов: каноническое имя -> набор допустимых заголовков (нормализованных)
+KEY_ALIASES = {
+    "first_name": {
+        "имя", "name", "first name", "first_name", "имя/name", "name/имя",
+    },
+    "last_name": {
+        "фамилия", "surname", "last name", "last_name", "фамилия/surname", "surname/фамилия",
+    },
+    "course": {
+        "название тренинга", "название", "course", "course name", "course_name",
+        "название тренинга/название", "название/название тренинга",
+    },
+    "dates": {
+        "даты", "дата", "dates", "date", "даты/дата", "date/dates",
+    },
+    "id": {
+        "id", "id/id", "идентификатор", "certificate id", "сертификат id",
+    },
+    "city": {
+        "город", "city", "город/city", "city/город",
+    },
+    "country": {
+        "страна", "country", "страна/country", "country/страна",
+    },
+}
+
+
+def _build_row_with_normalized_keys(row: Dict[str, str]) -> Dict[str, str]:
+    """Возвращает копию строки с нормализованными ключами (и оригинальными тоже).
+    Если встретили заголовок с косой чертой ("Имя/Name"), добавляем обе части как ключи.
+    """
+    out: Dict[str, str] = {}
+    for k, v in (row or {}).items():
+        if k is None:
+            continue
+        val = (v or "").strip()
+        # Оригинальный ключ
+        out[k] = val
+        # Нормализованный ключ
+        nk = _norm_key(str(k))
+        out[nk] = val
+        # Разбивка по "/" — часто встречается в шаблонах
+        if "/" in str(k):
+            parts = [p.strip() for p in str(k).split("/") if p.strip()]
+            for p in parts:
+                out[p] = val
+                out[_norm_key(p)] = val
+    return out
+
+
+def _get_field(row: Dict[str, str], canonical: str) -> str:
+    """Ищем значение по каноническому имени, используя KEY_ALIASES.
+    Учитываем исходные, нормализованные и разрезанные по '/'
+    заголовки.
+    """
+    r = _build_row_with_normalized_keys(row)
+    aliases = KEY_ALIASES.get(canonical, set())
+    for key in list(r.keys()):
+        nk = _norm_key(str(key))
+        if nk in aliases:
+            return (r[key] or "").strip()
+    # Последняя попытка: прямой поиск по каноническому имени
+    return (r.get(canonical) or r.get(_norm_key(canonical)) or "").strip()
+
+
 def normalize_online(v: str) -> bool:
     v = (v or "").strip().lower()
     if v in {"да", "yes", "true", "1", "y", "онлайн", "online"}:
@@ -1278,13 +1355,14 @@ async def generate(
                 try:
                     is_online = (mode == "online")
 
-                    course = (row.get("Название тренинга") or row.get("название тренинга") or row.get("Название") or "").strip()
-                    dates_raw = (row.get("Даты") or row.get("даты") or row.get("Дата") or "").strip()
-                    first_name = (row.get("Имя") or row.get("имя") or row.get("Name") or "").strip()
-                    last_name = (row.get("Фамилия") or row.get("фамилия") or row.get("Surname") or "").strip()
-                    cert_id = (row.get("ID") or row.get("Id") or row.get("id") or "").strip()
-                    city = (row.get("Город") or row.get("город") or row.get("City") or "").strip()
-                    country = (row.get("Страна") or row.get("страна") or row.get("Country") or "").strip()
+                    # Унифицированное извлечение значений с учетом комбинированных заголовков
+                    course = _get_field(row, "course")
+                    dates_raw = _get_field(row, "dates")
+                    first_name = _get_field(row, "first_name")
+                    last_name = _get_field(row, "last_name")
+                    cert_id = _get_field(row, "id")
+                    city = _get_field(row, "city")
+                    country = _get_field(row, "country")
 
                     if not (course and dates_raw and first_name and last_name and cert_id):
                         logger.warning(f"Skipping row {row_num}: missing required fields")
