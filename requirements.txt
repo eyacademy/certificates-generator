@@ -1,0 +1,7 @@
+fastapi==0.112.2
+uvicorn[standard]==0.30.6
+PyPDF2==3.0.1
+reportlab==4.2.2
+python-multipart==0.0.9
+docxtpl==0.16.7
+openpyxl==3.1.5
