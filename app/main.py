@@ -1082,24 +1082,37 @@ def render_docx_template(
             from docx import Document  # python-docx
             from docx.shared import Pt
             d = Document(temp_docx.name)
+
+            def all_paragraphs(doc):
+                pars = list(doc.paragraphs)
+                def walk_tables(tables, acc):
+                    for t in tables:
+                        for row in t.rows:
+                            for cell in row.cells:
+                                acc.extend(cell.paragraphs)
+                                if cell.tables:
+                                    walk_tables(cell.tables, acc)
+                walk_tables(doc.tables, pars)
+                return pars
+
+            paragraphs = all_paragraphs(d)
             target_course = (context or {}).get("Тренинг", "").strip()
             target_name = (context or {}).get("Имя", "").strip()
             name_indent = None
-            # Найдём абзац с именем, чтобы снять его отступ
+
             if target_name:
-                for p in d.paragraphs:
+                for p in paragraphs:
                     if target_name in (p.text or ""):
                         name_indent = p.paragraph_format.left_indent
                         break
-            # Найдём абзац курса и выровняем по имени (или по дефолтному отступу)
+
             if target_course:
-                for p in d.paragraphs:
+                for p in paragraphs:
                     if target_course in (p.text or ""):
                         if name_indent is not None:
                             p.paragraph_format.left_indent = name_indent
                         else:
                             p.paragraph_format.left_indent = Pt(course_indent_pts)
-                        # На всякий случай уберём спец. отступ первой строки
                         try:
                             p.paragraph_format.first_line_indent = Pt(0)
                         except Exception:
@@ -1434,6 +1447,8 @@ async def generate(
                         if group == "online":
                             pad = "\u00A0\u00A0"  # два неразрывных пробела
                             context["Имя"] = pad + context.get("Имя", "")
+                            # запасной вариант: легкий паддинг курса, если вдруг абзац не будет найден в DOCX
+                            context["Тренинг"] = pad + context.get("Тренинг", "")
 
                         async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
                             # В online включаем программный отступ абзаца для длинного названия курса
@@ -1638,6 +1653,7 @@ async def generate_async(
                                 if group == "online":
                                     pad = "\u00A0\u00A0"  # два неразрывных пробела
                                     context["Имя"] = pad + context.get("Имя", "")
+                                    context["Тренинг"] = pad + context.get("Тренинг", "")
 
                                 async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
                                     adjust = (group == "online")
