@@ -599,7 +599,7 @@ def format_dates_line(p: Dict[str, Optional[int]], city: Optional[str] = None) -
     city = (city or "").strip()
     return f"{core}, {city}" if city else core
 
-def draw_aligned_text(cnv: canvas.Canvas, x: float, y: float, text: str, align: str, size: int, font_name: Optional[str] = None, page_w: Optional[float] = None, page_h: Optional[float] = None):
+def draw_aligned_text(cnv, x, y, text, align, size, font_name=None, page_w=None, page_h=None):
     try:
         cnv.setFont(font_name or FONT_NAME, size)
     except Exception:
@@ -616,7 +616,7 @@ def draw_aligned_text(cnv: canvas.Canvas, x: float, y: float, text: str, align: 
         x_draw = max(margin, min(x_draw, page_w - margin - width))
     if page_h:
         y = max(margin, min(y, page_h - margin))
-    cnv.drawString(x_draw, y)
+    cnv.drawString(x_draw, y, text or "")   # ← добавили третий аргумент
 
 def wrap_text_to_width(text: str, size: int, max_width: int) -> List[str]:
     words = (text or "").split()
