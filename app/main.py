@@ -1065,7 +1065,7 @@ def render_docx_template(
     docx_path: str,
     context: Dict[str, str],
     adjust_online_course_indent: bool = False,
-    course_indent_pts: int = 6,
+    course_indent_pts: int = 12,
 ) -> bytes:
     """Рендерит DOCX шаблон с Jinja-переменными.
     Для online-шаблонов может слегка сместить абзац с названием тренинга вправо
