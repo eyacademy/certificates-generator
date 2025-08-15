@@ -492,20 +492,22 @@ LAYOUT = {
 
 # Отдельная разметка для online (портрет). Значения подобраны ориентировочно; подгоняются по скриншоту.
 ONLINE_LAYOUT = {
-    # Подгонка под шаблон Word (A4 portrait ~595x842):
-    # Текстовая колонка слева от центра, выравнивание по левому краю.
-    # Имя — между двумя статичными строками шаблона, жирное.
+    # Подгонка по вашему скриншоту (A4 portrait ~595x842):
+    # - Имя: правый блок, по правому краю; жирный; чуть ниже середины
+    # - Курс: над именем, небольшим кеглем
+    # - Даты: правее и ниже имени
+    # - ID: снизу слева у подписи ID Number
     "normal": {
-        "name": {"x": 360, "y": 482, "align": "left", "size": 13, "font": "EYInterstate-Bold"},
-        "course": {"x": 360, "y": 405, "align": "left", "size": 11, "max_width": 360},
-        "dates": {"x": 360, "y": 386, "align": "left", "size": 10},
-        "id": {"x": 520, "y": 100, "align": "left", "size": 9},
+        "name": {"x": 720, "y": 560, "align": "right", "size": 18, "font": "EYInterstate-Bold"},
+        "course": {"x": 720, "y": 590, "align": "right", "size": 12, "max_width": 320},
+        "dates": {"x": 720, "y": 540, "align": "right", "size": 11},
+        "id": {"x": 270, "y": 105, "align": "left", "size": 9},
     },
     "small": {
-        "name": {"x": 360, "y": 482, "align": "left", "size": 12, "font": "EYInterstate-Bold"},
-        "course": {"x": 360, "y": 405, "align": "left", "size": 10, "max_width": 360},
-        "dates": {"x": 360, "y": 386, "align": "left", "size": 9},
-        "id": {"x": 520, "y": 98, "align": "left", "size": 9},
+        "name": {"x": 720, "y": 560, "align": "right", "size": 17, "font": "EYInterstate-Bold"},
+        "course": {"x": 720, "y": 590, "align": "right", "size": 11, "max_width": 320},
+        "dates": {"x": 720, "y": 540, "align": "right", "size": 10},
+        "id": {"x": 270, "y": 103, "align": "left", "size": 9},
     },
 }
 
@@ -1210,27 +1212,6 @@ def merge_overlay(template_pdf_path: str, overlay_pdf_bytes: bytes) -> bytes:
     return out.read()
 
 
-def get_pdf_page_size(pdf_path: str) -> Tuple[float, float]:
-    """Возвращает размер первой страницы PDF в поинтах (width, height)."""
-    try:
-        r = PdfReader(pdf_path)
-        p = r.pages[0]
-        box = p.mediabox
-        # PyPDF2 v2/v3 совместимость
-        try:
-            w = float(box.right) - float(box.left)
-            h = float(box.top) - float(box.bottom)
-        except Exception:
-            try:
-                w = float(box[2]) - float(box[0])
-                h = float(box[3]) - float(box[1])
-            except Exception:
-                w, h = 595.0, 842.0  # A4 portrait по умолчанию
-        return w, h
-    except Exception:
-        return 595.0, 842.0
-
-
 # --------------------------- Реальный прогресс (SSE) ---------------------------
 
 @dataclass
@@ -1434,7 +1415,7 @@ async def generate(
                         last_name = _get_field(row, "last_name")
                         cert_id = _get_field(row, "id")
                         city = _get_field(row, "city")
-                        # country пока не используется в PDF-оверлее
+                        country = _get_field(row, "country")
 
                         if not (course and dates_raw and first_name and last_name and cert_id):
                             logger.warning(f"Skipping row {row_num}: missing required fields")
@@ -1451,38 +1432,31 @@ async def generate(
                         if not os.path.exists(docx_path):
                             raise FileNotFoundError(f"Template not found: {docx_path}")
 
-                        if group == "print":
-                            # Для печати остаёмся на механике фон-PDF + оверлей
-                            template_pdf_path = get_template_pdf_path(docx_name)
-                            page_w, page_h = get_pdf_page_size(template_pdf_path)
-                            async def render_one_print(template_pdf_path=template_pdf_path, page_w=page_w, page_h=page_h,
-                                                       first_name=first_name, last_name=last_name, course=course,
-                                                       parsed=parsed, cert_id=cert_id, variant=variant, group=group, city=city):
-                                ovl = await loop.run_in_executor(
-                                    executor,
-                                    build_overlay_pdf_bytes,
-                                    first_name, last_name, course, parsed, cert_id, variant, page_w, page_h, group, city, None, False
-                                )
-                                merged = await loop.run_in_executor(executor, merge_overlay, template_pdf_path, ovl)
-                                fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                                return fname, merged
-                            tasks.append(render_one_print())
-                        else:
-                            # Для online теперь делаем выравненный оверлей поверх PDF, а не прямой DOCX экспорт
-                            template_pdf_path = get_template_pdf_path(docx_name)
-                            page_w, page_h = get_pdf_page_size(template_pdf_path)
-                            async def render_one_online(template_pdf_path=template_pdf_path, page_w=page_w, page_h=page_h,
-                                                        first_name=first_name, last_name=last_name, course=course,
-                                                        parsed=parsed, cert_id=cert_id, variant=variant, group=group, city=city):
-                                ovl = await loop.run_in_executor(
-                                    executor,
-                                    build_overlay_pdf_bytes,
-                                    first_name, last_name, course, parsed, cert_id, variant, page_w, page_h, group, city, None, False
-                                )
-                                merged = await loop.run_in_executor(executor, merge_overlay, template_pdf_path, ovl)
-                                fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                                return fname, merged
-                            tasks.append(render_one_online())
+                        # Рендер для обоих режимов через DocxTemplate + LibreOffice (точное совпадение с DOCX)
+                        context = format_dates_for_jinja(parsed)
+                        context.update({
+                            "Имя": first_name,
+                            "Фамилия": last_name,
+                            "Тренинг": course,
+                            "Идентификатор": cert_id,
+                            "Город": city or context.get("Город", "Москва"),
+                            "Страна": country,
+                        })
+                        # Небольшой сдвиг вправо только для online-шаблонов
+                        if group == "online":
+                            pad = "\u00A0\u00A0"  # два неразрывных пробела (только для имени)
+                            context["Имя"] = pad + context.get("Имя", "")
+
+                        async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
+                            # В online включаем программный отступ абзаца для длинного названия курса
+                            adjust = (group == "online")
+                            pdf_bytes = await loop.run_in_executor(
+                                executor, render_docx_template, docx_path, context, adjust
+                            )
+                            fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                            return fname, pdf_bytes
+
+                        tasks.append(render_one())
                     except Exception as e:
                         logger.error(f"Error preparing row {row_num}: {str(e)}")
                         if state:
@@ -1646,7 +1620,7 @@ async def generate_async(
                                 last_name = _get_field(row, "last_name")
                                 cert_id = _get_field(row, "id")
                                 city = _get_field(row, "city")
-                                # country пока не используется в PDF-оверлее
+                                country = _get_field(row, "country")
 
                                 if not (course and dates_raw and first_name and last_name and cert_id):
                                     logger.warning(f"Skipping row {row_num}: missing required fields")
@@ -1663,20 +1637,27 @@ async def generate_async(
                                 if not os.path.exists(docx_path):
                                     raise FileNotFoundError(f"Template not found: {docx_path}")
 
-                                template_pdf_path = get_template_pdf_path(docx_name)
-                                page_w, page_h = get_pdf_page_size(template_pdf_path)
+                                context = format_dates_for_jinja(parsed)
+                                context.update({
+                                    "Имя": first_name,
+                                    "Фамилия": last_name,
+                                    "Тренинг": course,
+                                    "Идентификатор": cert_id,
+                                    "Город": city or context.get("Город", "Москва"),
+                                    "Страна": country,
+                                })
+                                # Небольшой сдвиг вправо только для online-шаблонов
+                                if group == "online":
+                                    pad = "\u00A0\u00A0"  # два неразрывных пробела (только для имени)
+                                    context["Имя"] = pad + context.get("Имя", "")
 
-                                async def render_one(template_pdf_path=template_pdf_path, page_w=page_w, page_h=page_h,
-                                                     first_name=first_name, last_name=last_name, course=course,
-                                                     parsed=parsed, cert_id=cert_id, variant=variant, group=group, city=city):
-                                    ovl = await loop.run_in_executor(
-                                        executor,
-                                        build_overlay_pdf_bytes,
-                                        first_name, last_name, course, parsed, cert_id, variant, page_w, page_h, group, city, None, False
+                                async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
+                                    adjust = (group == "online")
+                                    pdf_bytes = await loop.run_in_executor(
+                                        executor, render_docx_template, docx_path, context, adjust
                                     )
-                                    merged = await loop.run_in_executor(executor, merge_overlay, template_pdf_path, ovl)
                                     fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                                    return fname, merged
+                                    return fname, pdf_bytes
 
                                 tasks.append(render_one())
                             except Exception as e:
@@ -1749,3 +1730,4 @@ def download_result(job_id: str):
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=certificates.zip"},
     )
+
