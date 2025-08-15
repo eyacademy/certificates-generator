@@ -1389,6 +1389,11 @@ async def generate(
                             "Город": city or context.get("Город", "Москва"),
                             "Страна": country,
                         })
+                        # Небольшой сдвиг вправо только для online-шаблонов
+                        if group == "online":
+                            pad = "\u00A0\u00A0"  # два неразрывных пробела
+                            context["Имя"] = pad + context.get("Имя", "")
+                            context["Тренинг"] = pad + context.get("Тренинг", "")
 
                         async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
                             pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
@@ -1585,6 +1590,11 @@ async def generate_async(
                                     "Город": city or context.get("Город", "Москва"),
                                     "Страна": country,
                                 })
+                                # Небольшой сдвиг вправо только для online-шаблонов
+                                if group == "online":
+                                    pad = "\u00A0\u00A0"  # два неразрывных пробела
+                                    context["Имя"] = pad + context.get("Имя", "")
+                                    context["Тренинг"] = pad + context.get("Тренинг", "")
 
                                 async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
                                     pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
