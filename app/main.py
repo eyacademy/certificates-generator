@@ -1065,7 +1065,7 @@ def render_docx_template(
     docx_path: str,
     context: Dict[str, str],
     adjust_online_course_indent: bool = False,
-    course_indent_pts: int = 12,
+    course_indent_pts: int = 18,
 ) -> bytes:
     """Рендерит DOCX шаблон с Jinja-переменными.
     Для online-шаблонов может слегка сместить абзац с названием тренинга вправо
@@ -1082,11 +1082,28 @@ def render_docx_template(
             from docx import Document  # python-docx
             from docx.shared import Pt
             d = Document(temp_docx.name)
-            target = (context or {}).get("Тренинг", "").strip()
-            if target:
+            target_course = (context or {}).get("Тренинг", "").strip()
+            target_name = (context or {}).get("Имя", "").strip()
+            name_indent = None
+            # Найдём абзац с именем, чтобы снять его отступ
+            if target_name:
                 for p in d.paragraphs:
-                    if target in (p.text or ""):
-                        p.paragraph_format.left_indent = Pt(course_indent_pts)
+                    if target_name in (p.text or ""):
+                        name_indent = p.paragraph_format.left_indent
+                        break
+            # Найдём абзац курса и выровняем по имени (или по дефолтному отступу)
+            if target_course:
+                for p in d.paragraphs:
+                    if target_course in (p.text or ""):
+                        if name_indent is not None:
+                            p.paragraph_format.left_indent = name_indent
+                        else:
+                            p.paragraph_format.left_indent = Pt(course_indent_pts)
+                        # На всякий случай уберём спец. отступ первой строки
+                        try:
+                            p.paragraph_format.first_line_indent = Pt(0)
+                        except Exception:
+                            pass
                         break
                 d.save(temp_docx.name)
         except Exception as e:
