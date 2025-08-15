@@ -492,22 +492,20 @@ LAYOUT = {
 
 # Отдельная разметка для online (портрет). Значения подобраны ориентировочно; подгоняются по скриншоту.
 ONLINE_LAYOUT = {
-    # Подгонка по вашему скриншоту (A4 portrait ~595x842):
-    # - Имя: правый блок, по правому краю; жирный; чуть ниже середины
-    # - Курс: над именем, небольшим кеглем
-    # - Даты: правее и ниже имени
-    # - ID: снизу слева у подписи ID Number
+    # Подгонка под шаблон Word (A4 portrait ~595x842):
+    # Текстовая колонка слева от центра, выравнивание по левому краю.
+    # Имя — между двумя статичными строками шаблона, жирное.
     "normal": {
-        "name": {"x": 720, "y": 560, "align": "right", "size": 18, "font": "EYInterstate-Bold"},
-        "course": {"x": 720, "y": 590, "align": "right", "size": 12, "max_width": 320},
-        "dates": {"x": 720, "y": 540, "align": "right", "size": 11},
-        "id": {"x": 270, "y": 105, "align": "left", "size": 9},
+        "name": {"x": 460, "y": 520, "align": "left", "size": 13, "font": "EYInterstate-Bold"},
+        "course": {"x": 460, "y": 465, "align": "left", "size": 11, "max_width": 340},
+        "dates": {"x": 460, "y": 445, "align": "left", "size": 10},
+        "id": {"x": 460, "y": 110, "align": "left", "size": 9},
     },
     "small": {
-        "name": {"x": 720, "y": 560, "align": "right", "size": 17, "font": "EYInterstate-Bold"},
-        "course": {"x": 720, "y": 590, "align": "right", "size": 11, "max_width": 320},
-        "dates": {"x": 720, "y": 540, "align": "right", "size": 10},
-        "id": {"x": 270, "y": 103, "align": "left", "size": 9},
+        "name": {"x": 460, "y": 520, "align": "left", "size": 12, "font": "EYInterstate-Bold"},
+        "course": {"x": 460, "y": 465, "align": "left", "size": 10, "max_width": 340},
+        "dates": {"x": 460, "y": 445, "align": "left", "size": 9},
+        "id": {"x": 460, "y": 108, "align": "left", "size": 9},
     },
 }
 
