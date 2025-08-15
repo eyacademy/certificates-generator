@@ -1109,14 +1109,13 @@ def render_docx_template(
             if target_course:
                 for p in paragraphs:
                     if target_course in (p.text or ""):
+                        # Выравнивание всего абзаца по левому краю «Имя»
                         if name_indent is not None:
                             p.paragraph_format.left_indent = name_indent
                         else:
                             p.paragraph_format.left_indent = Pt(course_indent_pts)
-                        try:
-                            p.paragraph_format.first_line_indent = Pt(0)
-                        except Exception:
-                            pass
+                        # Первая строка не должна иметь отдельного отступа — переносы начнутся ровно с левого края
+                        p.paragraph_format.first_line_indent = Pt(0)
                         break
                 d.save(temp_docx.name)
         except Exception as e:
@@ -1445,10 +1444,8 @@ async def generate(
                         })
                         # Небольшой сдвиг вправо только для online-шаблонов
                         if group == "online":
-                            pad = "\u00A0\u00A0"  # два неразрывных пробела
+                            pad = "\u00A0\u00A0"  # два неразрывных пробела (только для имени)
                             context["Имя"] = pad + context.get("Имя", "")
-                            # запасной вариант: легкий паддинг курса, если вдруг абзац не будет найден в DOCX
-                            context["Тренинг"] = pad + context.get("Тренинг", "")
 
                         async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
                             # В online включаем программный отступ абзаца для длинного названия курса
@@ -1651,9 +1648,8 @@ async def generate_async(
                                 })
                                 # Небольшой сдвиг вправо только для online-шаблонов
                                 if group == "online":
-                                    pad = "\u00A0\u00A0"  # два неразрывных пробела
+                                    pad = "\u00A0\u00A0"  # два неразрывных пробела (только для имени)
                                     context["Имя"] = pad + context.get("Имя", "")
-                                    context["Тренинг"] = pad + context.get("Тренинг", "")
 
                                 async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
                                     adjust = (group == "online")
