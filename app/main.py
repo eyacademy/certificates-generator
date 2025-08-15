@@ -1061,13 +1061,37 @@ def docx_to_pdf_cached(docx_path: str) -> str:
     return pdf_path
 
 
-def render_docx_template(docx_path: str, context: Dict[str, str]) -> bytes:
-    """Рендерит DOCX шаблон с Jinja-переменными"""
+def render_docx_template(
+    docx_path: str,
+    context: Dict[str, str],
+    adjust_online_course_indent: bool = False,
+    course_indent_pts: int = 6,
+) -> bytes:
+    """Рендерит DOCX шаблон с Jinja-переменными.
+    Для online-шаблонов может слегка сместить абзац с названием тренинга вправо
+    (отступ применяется ко всем перенесённым строкам абзаца).
+    """
     doc = DocxTemplate(docx_path)
     doc.render(context)
     temp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
     doc.save(temp_docx.name)
     temp_docx.close()
+
+    if adjust_online_course_indent:
+        try:
+            from docx import Document  # python-docx
+            from docx.shared import Pt
+            d = Document(temp_docx.name)
+            target = (context or {}).get("Тренинг", "").strip()
+            if target:
+                for p in d.paragraphs:
+                    if target in (p.text or ""):
+                        p.paragraph_format.left_indent = Pt(course_indent_pts)
+                        break
+                d.save(temp_docx.name)
+        except Exception as e:
+            logger.warning(f"Course indent adjust skipped: {e}")
+
     pdf_path = docx_to_pdf_cached(temp_docx.name)
     with open(pdf_path, 'rb') as f:
         pdf_bytes = f.read()
@@ -1393,10 +1417,13 @@ async def generate(
                         if group == "online":
                             pad = "\u00A0\u00A0"  # два неразрывных пробела
                             context["Имя"] = pad + context.get("Имя", "")
-                            context["Тренинг"] = pad + context.get("Тренинг", "")
 
-                        async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
-                            pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
+                        async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
+                            # В online включаем программный отступ абзаца для длинного названия курса
+                            adjust = (group == "online")
+                            pdf_bytes = await loop.run_in_executor(
+                                executor, render_docx_template, docx_path, context, adjust
+                            )
                             fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
                             return fname, pdf_bytes
 
@@ -1594,10 +1621,12 @@ async def generate_async(
                                 if group == "online":
                                     pad = "\u00A0\u00A0"  # два неразрывных пробела
                                     context["Имя"] = pad + context.get("Имя", "")
-                                    context["Тренинг"] = pad + context.get("Тренинг", "")
 
-                                async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name):
-                                    pdf_bytes = await loop.run_in_executor(executor, render_docx_template, docx_path, context)
+                                async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
+                                    adjust = (group == "online")
+                                    pdf_bytes = await loop.run_in_executor(
+                                        executor, render_docx_template, docx_path, context, adjust
+                                    )
                                     fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
                                     return fname, pdf_bytes
 
