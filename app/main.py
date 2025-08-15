@@ -496,16 +496,16 @@ ONLINE_LAYOUT = {
     # Текстовая колонка слева от центра, выравнивание по левому краю.
     # Имя — между двумя статичными строками шаблона, жирное.
     "normal": {
-        "name": {"x": 460, "y": 520, "align": "left", "size": 13, "font": "EYInterstate-Bold"},
-        "course": {"x": 460, "y": 465, "align": "left", "size": 11, "max_width": 340},
-        "dates": {"x": 460, "y": 445, "align": "left", "size": 10},
-        "id": {"x": 460, "y": 110, "align": "left", "size": 9},
+        "name": {"x": 365, "y": 508, "align": "left", "size": 13, "font": "EYInterstate-Bold"},
+        "course": {"x": 365, "y": 458, "align": "left", "size": 11, "max_width": 340},
+        "dates": {"x": 365, "y": 438, "align": "left", "size": 10},
+        "id": {"x": 360, "y": 110, "align": "left", "size": 9},
     },
     "small": {
-        "name": {"x": 460, "y": 520, "align": "left", "size": 12, "font": "EYInterstate-Bold"},
-        "course": {"x": 460, "y": 465, "align": "left", "size": 10, "max_width": 340},
-        "dates": {"x": 460, "y": 445, "align": "left", "size": 9},
-        "id": {"x": 460, "y": 108, "align": "left", "size": 9},
+        "name": {"x": 365, "y": 508, "align": "left", "size": 12, "font": "EYInterstate-Bold"},
+        "course": {"x": 365, "y": 458, "align": "left", "size": 10, "max_width": 340},
+        "dates": {"x": 365, "y": 438, "align": "left", "size": 9},
+        "id": {"x": 360, "y": 108, "align": "left", "size": 9},
     },
 }
 
