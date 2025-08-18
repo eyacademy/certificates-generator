@@ -46,7 +46,7 @@ logger = logging.getLogger("certefikati")
 
 # === Online visual tweaks (padding with non-breaking spaces) ===
 ONLINE_NAME_PAD_NBSP = 2    # сколько \u00A0 добавить к Имени в online
-ONLINE_COURSE_PAD_NBSP = 6  # сколько \u00A0 добавить к Тренингу в online (чуть дальше вправо)
+ONLINE_COURSE_PAD_NBSP = 2  # сколько \u00A0 добавить к Тренингу в online (чуть дальше вправо)
 NBSP = "\u00A0"
 
 
@@ -575,7 +575,7 @@ def render_docx_template(
     docx_path: str,
     context: Dict[str, str],
     adjust_online_course_indent: bool = False,
-    course_indent_pts: int = 24,
+    course_indent_pts: int = 18,
 ) -> bytes:
     """
     Рендерит DOCX шаблон с Jinja-переменными.
