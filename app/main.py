@@ -30,7 +30,6 @@ import json
 import time
 from dataclasses import dataclass, field
 from docxtpl import DocxTemplate
-from docx.shared import Pt, Cm
 
 app = FastAPI(title="Certificates Generator")
 logging.basicConfig(level=logging.INFO)
@@ -499,15 +498,15 @@ ONLINE_LAYOUT = {
     # - Даты: правее и ниже имени
     # - ID: снизу слева у подписи ID Number
     "normal": {
-        "name": {"x": 720, "y": 560, "align": "right", "size": 18, "font": "EYInterstate-Bold"},
-        "course": {"x": 720, "y": 590, "align": "right", "size": 12, "max_width": 320},
-        "dates": {"x": 720, "y": 540, "align": "right", "size": 11},
+        "name": {"x": 750, "y": 560, "align": "right", "size": 18, "font": "EYInterstate-Bold"},
+        "course": {"x": 750, "y": 590, "align": "right", "size": 12, "max_width": 320},
+        "dates": {"x": 750, "y": 540, "align": "right", "size": 11},
         "id": {"x": 270, "y": 105, "align": "left", "size": 9},
     },
     "small": {
-        "name": {"x": 720, "y": 560, "align": "right", "size": 17, "font": "EYInterstate-Bold"},
-        "course": {"x": 720, "y": 590, "align": "right", "size": 11, "max_width": 320},
-        "dates": {"x": 720, "y": 540, "align": "right", "size": 10},
+        "name": {"x": 750, "y": 560, "align": "right", "size": 17, "font": "EYInterstate-Bold"},
+        "course": {"x": 750, "y": 590, "align": "right", "size": 11, "max_width": 320},
+        "dates": {"x": 750, "y": 540, "align": "right", "size": 10},
         "id": {"x": 270, "y": 103, "align": "left", "size": 9},
     },
 }
@@ -1066,10 +1065,12 @@ def render_docx_template(
     docx_path: str,
     context: Dict[str, str],
     adjust_online_course_indent: bool = False,
-    course_indent_cm: float = 2.5,
+    course_indent_pts: int = 18,
 ) -> bytes:
-    """Рендерит DOCX шаблон с Jinja-переменными и выравнивает курс вправо."""
-
+    """Рендерит DOCX шаблон с Jinja-переменными.
+    Для online-шаблонов может слегка сместить абзац с названием тренинга вправо
+    (отступ применяется ко всем перенесённым строкам абзаца).
+    """
     doc = DocxTemplate(docx_path)
     doc.render(context)
     temp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
@@ -1078,37 +1079,54 @@ def render_docx_template(
 
     if adjust_online_course_indent:
         try:
-            from docx import Document
+            from docx import Document  # python-docx
+            from docx.shared import Pt
             d = Document(temp_docx.name)
 
-            target_course = (context or {}).get("Тренинг", "").strip().lower()
+            def all_paragraphs(doc):
+                pars = list(doc.paragraphs)
+                def walk_tables(tables, acc):
+                    for t in tables:
+                        for row in t.rows:
+                            for cell in row.cells:
+                                acc.extend(cell.paragraphs)
+                                if cell.tables:
+                                    walk_tables(cell.tables, acc)
+                walk_tables(doc.tables, pars)
+                return pars
+
+            paragraphs = all_paragraphs(d)
+            target_course = (context or {}).get("Тренинг", "").strip()
+            target_name = (context or {}).get("Имя", "").strip()
+            name_indent = None
+
+            if target_name:
+                for p in paragraphs:
+                    if target_name in (p.text or ""):
+                        name_indent = p.paragraph_format.left_indent
+                        break
+
             if target_course:
-                for p in d.paragraphs:
-                    text_norm = " ".join((p.text or "").lower().split())
-                    if all(word in text_norm for word in target_course.split()[:3]):  
-                        # ловим абзац с курсом по первым 2-3 словам
-                        p.paragraph_format.left_indent = Cm(course_indent_cm)
+                for p in paragraphs:
+                    if target_course in (p.text or ""):
+                        # Выравнивание всего абзаца по левому краю «Имя»
+                        if name_indent is not None:
+                            p.paragraph_format.left_indent = name_indent
+                        else:
+                            p.paragraph_format.left_indent = Pt(course_indent_pts)
+                        # Первая строка не должна иметь отдельного отступа — переносы начнутся ровно с левого края
                         p.paragraph_format.first_line_indent = Pt(0)
-
-                for table in d.tables:
-                    for row in table.rows:
-                        for cell in row.cells:
-                            for p in cell.paragraphs:
-                                text_norm = " ".join((p.text or "").lower().split())
-                                if all(word in text_norm for word in target_course.split()[:3]):
-                                    p.paragraph_format.left_indent = Cm(course_indent_cm)
-                                    p.paragraph_format.first_line_indent = Pt(0)
-
+                        break
                 d.save(temp_docx.name)
-
         except Exception as e:
-            logging.warning(f"Course indent adjust skipped: {e}")
+            logger.warning(f"Course indent adjust skipped: {e}")
 
     pdf_path = docx_to_pdf_cached(temp_docx.name)
     with open(pdf_path, 'rb') as f:
         pdf_bytes = f.read()
     os.unlink(temp_docx.name)
     return pdf_bytes
+
 
 def build_blank_pdf_from_docx_template(docx_path: str) -> str:
     """Строит и кэширует PDF-фон из DOCX-шаблона с пустым контекстом,
@@ -1424,14 +1442,10 @@ async def generate(
                             "Город": city or context.get("Город", "Москва"),
                             "Страна": country,
                         })
-                        # Небольшой сдвиг вправо только для online-шаблонов
-                        if group == "online":
-                            pad = "\u00A0\u00A0"  # два неразрывных пробела (только для имени)
-                            context["Имя"] = pad + context.get("Имя", "")
 
                         async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
-                            # В online включаем программный отступ абзаца для длинного названия курса
-                            adjust = (group == "online")
+                            # Отключаем автоматический отступ для онлайн-шаблонов
+                            adjust = False
                             pdf_bytes = await loop.run_in_executor(
                                 executor, render_docx_template, docx_path, context, adjust
                             )
@@ -1628,13 +1642,10 @@ async def generate_async(
                                     "Город": city or context.get("Город", "Москва"),
                                     "Страна": country,
                                 })
-                                # Небольшой сдвиг вправо только для online-шаблонов
-                                if group == "online":
-                                    pad = "\u00A0\u00A0"  # два неразрывных пробела (только для имени)
-                                    context["Имя"] = pad + context.get("Имя", "")
 
                                 async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
-                                    adjust = (group == "online")
+                                    # Отключаем автоматический отступ для онлайн-шаблонов
+                                    adjust = False
                                     pdf_bytes = await loop.run_in_executor(
                                         executor, render_docx_template, docx_path, context, adjust
                                     )
