@@ -1429,6 +1429,7 @@ async def generate(
                             pad = "\u00A0\u00A0"  # два неразрывных пробела (только для имени)
                             context["Имя"] = pad + context.get("Имя", "")
                                     context["Тренинг"] = pad + context.get("Тренинг", "")
+                            context["Тренинг"] = pad + context.get("Тренинг", "")
 
                         async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
                             # В online включаем программный отступ абзаца для длинного названия курса
@@ -1634,6 +1635,7 @@ async def generate_async(
                                     pad = "\u00A0\u00A0"  # два неразрывных пробела (только для имени)
                                     context["Имя"] = pad + context.get("Имя", "")
                                     context["Тренинг"] = pad + context.get("Тренинг", "")
+                            context["Тренинг"] = pad + context.get("Тренинг", "")
 
                                 async def render_one(docx_path=docx_path, context=context, cert_id=cert_id, last_name=last_name, first_name=first_name, group=group):
                                     adjust = (group == "online")
