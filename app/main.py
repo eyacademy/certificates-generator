@@ -660,8 +660,8 @@ def render_docx_template(
             # twips: 1 pt = 20 twips; 1 см ≈ 567 twips
             # ПОД КОРРЕКТИРОВКУ:
             COURSE_LEFT_TWIPS      = 260  # общий левый отступ курса (обе строки) ~ 0.46 см (чуть левее, чем раньше)
-            COURSE_HANGING_TWIPS   = 40   # «висячий» отступ: вторая и последующие строки правее первой ~ 0.07 см
-            DATE_LEFT_TWIPS        = 380  # дату чуть правее ~ 0.67 см
+            COURSE_HANGING_TWIPS   = 60  # «висячий» отступ: вторая и последующие строки правее первой ~ 0.07 см
+            DATE_LEFT_TWIPS        = 340  # дату чуть правее ~ 0.67 см
 
             def norm(s: str) -> str:
                 return " ".join((s or "").split()).lower()
