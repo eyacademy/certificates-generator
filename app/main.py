@@ -30,6 +30,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from docxtpl import DocxTemplate
+from docx.shared import Pt, Cm
 
 app = FastAPI(title="Certificates Generator")
 logging.basicConfig(level=logging.INFO)
@@ -1065,12 +1066,10 @@ def render_docx_template(
     docx_path: str,
     context: Dict[str, str],
     adjust_online_course_indent: bool = False,
-    course_indent_pts: int = 18,
+    course_indent_cm: float = 2.5,
 ) -> bytes:
-    """Рендерит DOCX шаблон с Jinja-переменными.
-    Для online-шаблонов теперь корректируем отступ для курса:
-    он приравнивается к отступу имени, чтобы текст стоял ровно.
-    """
+    """Рендерит DOCX шаблон с Jinja-переменными и выравнивает курс вправо."""
+
     doc = DocxTemplate(docx_path)
     doc.render(context)
     temp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
@@ -1079,44 +1078,29 @@ def render_docx_template(
 
     if adjust_online_course_indent:
         try:
-            from docx import Document  # python-docx
-            from docx.shared import Pt
+            from docx import Document
             d = Document(temp_docx.name)
 
-            def all_paragraphs(doc):
-                pars = list(doc.paragraphs)
-                def walk_tables(tables, acc):
-                    for t in tables:
-                        for row in t.rows:
-                            for cell in row.cells:
-                                acc.extend(cell.paragraphs)
-                                if cell.tables:
-                                    walk_tables(cell.tables, acc)
-                walk_tables(doc.tables, pars)
-                return pars
-
-            paragraphs = all_paragraphs(d)
-            target_course = (context or {}).get("Тренинг", "").strip()
-            target_name = (context or {}).get("Имя", "").strip()
-            name_indent = None
-
-            if target_name:
-                for p in paragraphs:
-                    if target_name in (p.text or ""):
-                        name_indent = p.paragraph_format.left_indent
-                        break
-
+            target_course = (context or {}).get("Тренинг", "").strip().lower()
             if target_course:
-                for p in paragraphs:
-                    if target_course in (p.text or ""):
-                        # Выравнивание курса по тому же отступу, что и у имени
-                        if name_indent is not None:
-                            p.paragraph_format.left_indent = name_indent
-                        else:
-                            p.paragraph_format.left_indent = Pt(course_indent_pts)
+                for p in d.paragraphs:
+                    text_norm = " ".join((p.text or "").lower().split())
+                    if all(word in text_norm for word in target_course.split()[:3]):  
+                        # ловим абзац с курсом по первым 2-3 словам
+                        p.paragraph_format.left_indent = Cm(course_indent_cm)
                         p.paragraph_format.first_line_indent = Pt(0)
-                        break
+
+                for table in d.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            for p in cell.paragraphs:
+                                text_norm = " ".join((p.text or "").lower().split())
+                                if all(word in text_norm for word in target_course.split()[:3]):
+                                    p.paragraph_format.left_indent = Cm(course_indent_cm)
+                                    p.paragraph_format.first_line_indent = Pt(0)
+
                 d.save(temp_docx.name)
+
         except Exception as e:
             logging.warning(f"Course indent adjust skipped: {e}")
 
@@ -1125,7 +1109,6 @@ def render_docx_template(
         pdf_bytes = f.read()
     os.unlink(temp_docx.name)
     return pdf_bytes
-
 
 def build_blank_pdf_from_docx_template(docx_path: str) -> str:
     """Строит и кэширует PDF-фон из DOCX-шаблона с пустым контекстом,
