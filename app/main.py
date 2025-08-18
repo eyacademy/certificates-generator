@@ -9,6 +9,14 @@ import logging
 import shutil
 from typing import Dict, List, Optional, Tuple
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+import json
+import time
+from threading import Lock
+
+# --- optional Excel support
 try:
     from openpyxl import load_workbook
     HAS_XLSX = True
@@ -25,29 +33,26 @@ from fastapi.responses import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-import json
-import time
-
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 from docxtpl import DocxTemplate
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # App / logging
-# -----------------------------------------------------------------------------
+# =============================================================================
 app = FastAPI(title="Certificates Generator")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("certefikati")
 
 # === Online visual tweaks (padding with non-breaking spaces) ===
-ONLINE_NAME_PAD_NBSP = 2    # сколько \u00A0 добавить к Имени в online
-ONLINE_COURSE_PAD_NBSP = 2  # сколько \u00A0 добавить к Тренингу в online (чуть дальше вправо)
+ONLINE_NAME_PAD_NBSP   = 2   # \u00A0 для Имени
+ONLINE_COURSE_PAD_NBSP = 1   # \u00A0 для Курса — держим скромно, чтобы не тянуть только первую строку
 NBSP = "\u00A0"
+
+# lock для сериализации LibreOffice (soffice) конвертаций
+LO_CONVERT_LOCK = Lock()
 
 
 @app.head("/")
@@ -71,32 +76,16 @@ def ui():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Генератор сертификатов</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 50px auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-        }
-        .container {
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; background-color: #f5f5f5; }
+        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         h1 { color: #333; text-align: center; margin-bottom: 30px; }
         .form-group { margin-bottom: 20px; }
         label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
-        input[type="file"] {
-            width: 100%; padding: 10px; border: 2px dashed #ddd; border-radius: 5px; background: #fafafa;
-        }
+        input[type="file"] { width: 100%; padding: 10px; border: 2px dashed #ddd; border-radius: 5px; background: #fafafa; }
         .radio-group { display: flex; gap: 20px; margin-top: 10px; }
         .radio-item { display: flex; align-items: center; gap: 5px; }
         input[type="radio"] { margin: 0; }
-        button {
-            background: #007bff; color: white; border: none; padding: 12px 30px; border-radius: 5px;
-            cursor: pointer; font-size: 16px; width: 100%; margin-top: 20px;
-        }
+        button { background: #007bff; color: white; border: none; padding: 12px 30px; border-radius: 5px; cursor: pointer; font-size: 16px; width: 100%; margin-top: 20px; }
         button:hover { background: #0056b3; }
         button:disabled { background: #ccc; cursor: not-allowed; }
         .status { margin-top: 20px; padding: 10px; border-radius: 5px; display: none; }
@@ -105,6 +94,7 @@ def ui():
         .progress { width: 100%; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden; margin-top: 10px; display: none; }
         .progress-bar { height: 100%; background: #007bff; width: 0%; transition: width 0.3s; }
         .progress-info { margin-top: 6px; color: #555; font-size: 14px; display: none; }
+        #fileStatus { margin-top: 6px; font-size: 14px; }
     </style>
 </head>
 <body>
@@ -122,11 +112,11 @@ def ui():
                 <label>Тип сертификата:</label>
                 <div class="radio-group">
                     <div class="radio-item">
-                        <input type="radio" id="print" name="mode" value="print" checked>
+                        <input type="radio" id="print" name="mode" value="print">
                         <label for="print">Печать</label>
                     </div>
                     <div class="radio-item">
-                        <input type="radio" id="online" name="mode" value="online">
+                        <input type="radio" id="online" name="mode" value="online" checked>
                         <label for="online">Онлайн</label>
                     </div>
                 </div>
@@ -168,7 +158,7 @@ def ui():
             const mode = document.querySelector('input[name="mode"]:checked').value;
 
             if (!file) {
-                showStatus('Пожалуйста, выберите CSV файл', 'error');
+                showStatus('Пожалуйста, выберите файл', 'error');
                 return;
             }
 
@@ -288,12 +278,11 @@ app.add_middleware(
 )
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Paths / fonts
-# -----------------------------------------------------------------------------
+# =============================================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates"))
-PDF_TEMPLATES_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "TemplatesPDF"))
 
 FONTS_DIR_CANDIDATES = [
     os.path.abspath(os.path.join(BASE_DIR, "..", "fonts")),
@@ -334,9 +323,9 @@ if not registered:
     FONT_NAME = "Helvetica"
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # DOCX map
-# -----------------------------------------------------------------------------
+# =============================================================================
 DOCX_MAP: Dict[str, Dict[str, Dict[str, str]]] = {
     "print": {
         "duration_day": {"normal": "template_duration_day.docx", "small": "template_small_duration_day.docx"},
@@ -353,9 +342,9 @@ DOCX_MAP: Dict[str, Dict[str, Dict[str, str]]] = {
 DOCX_TO_PDF_CACHE: Dict[str, str] = {}
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Helpers: CSV/Excel parsing, dates, name sizing
-# -----------------------------------------------------------------------------
+# =============================================================================
 MONTH_GEN = {
     1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
     7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December",
@@ -512,9 +501,9 @@ def sanitize_filename(s: str) -> str:
     return re.sub(r'[\\/:*?"<>|]+', "_", s).replace(" ", "_")[:100]
 
 
-# -----------------------------------------------------------------------------
-# DOCX -> PDF (LibreOffice)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# DOCX -> PDF (LibreOffice) — СЕРИАЛИЗОВАНО
+# =============================================================================
 def docx_to_pdf_cached(docx_path: str) -> str:
     abs_docx = os.path.abspath(docx_path)
     if abs_docx in DOCX_TO_PDF_CACHE:
@@ -536,10 +525,10 @@ def docx_to_pdf_cached(docx_path: str) -> str:
             if path == "soffice":
                 test_cmd = ["soffice", "--version"]
                 subprocess.run(test_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                cmd = [path, "--headless", "--convert-to", "pdf", "--outdir", out_dir, abs_docx]
+                cmd = [path]
                 break
             elif os.path.exists(path):
-                cmd = [path, "--headless", "--convert-to", "pdf", "--outdir", out_dir, abs_docx]
+                cmd = [path]
                 break
         except (subprocess.CalledProcessError, FileNotFoundError):
             continue
@@ -556,21 +545,30 @@ def docx_to_pdf_cached(docx_path: str) -> str:
         f"-env:UserInstallation={profile_url}",
         "--convert-to", "pdf", "--outdir", out_dir, abs_docx,
     ]
-    proc = subprocess.run(cmd_with_profile, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    last_stdout = last_stderr = b""
     pdf_path = os.path.join(out_dir, os.path.splitext(os.path.basename(abs_docx))[0] + ".pdf")
+    # сериализация + мягкий ретрай
+    with LO_CONVERT_LOCK:
+        for attempt in range(2):
+            proc = subprocess.run(cmd_with_profile, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+            last_stdout, last_stderr = proc.stdout, proc.stderr
+            if os.path.exists(pdf_path):
+                break
+            time.sleep(0.5)
+
     if not os.path.exists(pdf_path):
-        stderr_txt = proc.stderr.decode(errors='ignore') if proc.stderr else ''
-        stdout_txt = proc.stdout.decode(errors='ignore') if proc.stdout else ''
+        stderr_txt = (last_stderr or b"").decode(errors='ignore')
+        stdout_txt = (last_stdout or b"").decode(errors='ignore')
         raise RuntimeError(f"LibreOffice convert failed: {stderr_txt or stdout_txt or 'unknown error'}")
 
     DOCX_TO_PDF_CACHE[abs_docx] = pdf_path
     return pdf_path
 
 
-# -----------------------------------------------------------------------------
-# Render DOCX + (для online) поправка отступа курса
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Render DOCX + точная правка отступов в текстбоксах
+# =============================================================================
 def render_docx_template(
     docx_path: str,
     context: Dict[str, str],
@@ -579,22 +577,21 @@ def render_docx_template(
 ) -> bytes:
     """
     Рендерит DOCX и (в online-режиме) аккуратно выравнивает:
-    - курс: первая строка чуть левее второй (за счёт w:ind/@w:hanging)
-    - дату: немного правее
+      - курс: общая позиция + первая строка чуть левее второй (через w:ind/@w:hanging)
+      - дату: немного правее
     Делает «репак» архива DOCX без дублей частей (LibreOffice не падает).
     """
-    from docxtpl import DocxTemplate
     import zipfile, shutil
     from xml.etree import ElementTree as ET
 
-    # 1) Рендер во временный DOCX
+    # 1) Рендер шаблона во временный DOCX
     doc = DocxTemplate(docx_path)
     doc.render(context)
     tmp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
     doc.save(tmp_docx.name)
     tmp_docx.close()
 
-    # Репак без дубликатов: заменяем части либо добавляем, не плодя вторые копии
+    # безопасная замена частей
     def _repack_docx_replace(path: str, replacements: Dict[str, bytes]) -> None:
         if not replacements:
             return
@@ -613,7 +610,7 @@ def render_docx_template(
         shutil.move(tmp_out, path)
 
     if adjust_online_course_indent:
-        # 2) Если курс случайно не в текстбоксе — правим обычный параграф (без экстремальных значений)
+        # 2) При необходимости — мягкая правка обычного параграфа (если это не текстбокс)
         try:
             from docx import Document
             from docx.shared import Pt
@@ -644,13 +641,13 @@ def render_docx_template(
                         course_para = p
                         break
             if course_para is not None:
-                course_para.paragraph_format.left_indent = Pt(course_indent_pts)  # мягкий базовый отступ
+                course_para.paragraph_format.left_indent = Pt(course_indent_pts)
                 course_para.paragraph_format.first_line_indent = Pt(0)
                 d.save(tmp_docx.name)
         except Exception as e:
             logging.warning(f"Docx paragraph adjust skipped: {e}")
 
-        # 3) Точная настройка внутри ТЕКСТБОКСОВ (wps:txbx и v:textbox)
+        # 3) Точная настройка внутри текстбоксов
         try:
             ns = {
                 "w":   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -658,10 +655,9 @@ def render_docx_template(
                 "v":   "urn:schemas-microsoft-com:vml",
             }
             # twips: 1 pt = 20 twips; 1 см ≈ 567 twips
-            # ПОД КОРРЕКТИРОВКУ:
-            COURSE_LEFT_TWIPS      = 260  # общий левый отступ курса (обе строки) ~ 0.46 см (чуть левее, чем раньше)
-            COURSE_HANGING_TWIPS   = 60  # «висячий» отступ: вторая и последующие строки правее первой ~ 0.07 см
-            DATE_LEFT_TWIPS        = 340  # дату чуть правее ~ 0.67 см
+            COURSE_LEFT_TWIPS    = 260  # общий левый отступ курса (обе строки)  ≈ 0.46 см
+            COURSE_HANGING_TWIPS = 60   # «висячий» отступ: 2-я строка правее 1-й  ≈ 1.05 мм
+            DATE_LEFT_TWIPS      = 340  # дата чуть правее                           ≈ 0.60 см
 
             def norm(s: str) -> str:
                 return " ".join((s or "").split()).lower()
@@ -692,16 +688,15 @@ def render_docx_template(
                         return norm("".join(t.text or "" for t in p.findall(".//w:t", ns)))
 
                     changed = False
-
-                    # --- Новые текстбоксы (DrawingML)
+                    # DrawingML textboxes
                     for p in root.findall(".//wps:txbx//w:p", ns):
                         t = para_text(p)
                         if is_course_para(t):
                             pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
                             ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
                             ind.set("{%s}left" % ns["w"], str(COURSE_LEFT_TWIPS))
-                            ind.set("{%s}hanging" % ns["w"], str(COURSE_HANGING_TWIPS))  # 2-я строка чуть правее
-                            if ind.get("{%s}firstLine" % ns["w"]):  # убираем, чтобы не конфликтовало
+                            ind.set("{%s}hanging" % ns["w"], str(COURSE_HANGING_TWIPS))
+                            if ind.get("{%s}firstLine" % ns["w"]):
                                 ind.attrib.pop("{%s}firstLine" % ns["w"], None)
                             changed = True
                         elif is_date_para(t):
@@ -713,7 +708,7 @@ def render_docx_template(
                                 ind.attrib.pop("{%s}hanging" % ns["w"], None)
                             changed = True
 
-                    # --- Старые VML-текстбоксы
+                    # legacy VML textboxes
                     for p in root.findall(".//v:textbox//w:p", ns):
                         t = para_text(p)
                         if is_course_para(t):
@@ -747,9 +742,10 @@ def render_docx_template(
     os.unlink(tmp_docx.name)
     return pdf_bytes
 
-# -----------------------------------------------------------------------------
+
+# =============================================================================
 # SSE progress
-# -----------------------------------------------------------------------------
+# =============================================================================
 @dataclass
 class ProgressState:
     total: int = 0
@@ -801,9 +797,9 @@ async def progress_stream(job_id: str):
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Misc endpoints
-# -----------------------------------------------------------------------------
+# =============================================================================
 @app.get("/health")
 def health() -> PlainTextResponse:
     return PlainTextResponse("ok")
@@ -844,12 +840,47 @@ def check_templates():
     }
 
 
-# -----------------------------------------------------------------------------
-# Core: generate (sync → returns zip), generate-async (background)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Core: generate (sync) / generate-async
+# =============================================================================
 async def _as_completed_iter(coros):
     for fut in asyncio.as_completed(coros):
         yield fut
+
+
+def _parse_uploaded_table(data: bytes, filename: str) -> List[Dict[str, str]]:
+    """Возвращает строки с полями по исходному CSV/XLSX."""
+    rows_list: List[Dict[str, str]] = []
+    if (filename or "").lower().endswith((".xlsx", ".xlsm", ".xls")):
+        if not HAS_XLSX:
+            raise RuntimeError('Поддержка Excel не установлена на сервере')
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        ws = wb.active
+        headers: List[str] = []
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            cells = [(c if c is not None else '') for c in row]
+            if not any(str(c).strip() for c in cells): continue
+            if not headers:
+                candidate = [str(c).strip() for c in cells]
+                tech = all(h.lower().startswith('column') or h.lower().startswith('unnamed') or h == '' for h in candidate)
+                non_empty = [h for h in candidate if h]
+                if tech or len(non_empty) < 3: continue
+                headers = candidate; continue
+            d: Dict[str, str] = {}
+            for idx, h in enumerate(headers):
+                val = '' if idx >= len(cells) or cells[idx] is None else str(cells[idx])
+                d[h] = val
+            rows_list.append(d)
+        if not headers or not rows_list:
+            raise ValueError('Excel: нераспознан заголовок или нет данных')
+    else:
+        raw_txt = data.decode('utf-8-sig', errors='ignore')
+        txt, delim = normalize_csv_and_get_delimiter(raw_txt)
+        if not txt:
+            raise ValueError('CSV пустой или нераспознанный формат')
+        dict_reader = csv.DictReader(io.StringIO(txt), delimiter=delim)
+        rows_list = [row for row in dict_reader]
+    return rows_list
 
 
 @app.post("/generate")
@@ -868,42 +899,8 @@ async def generate(
             await emit(job_id)
 
         data = await csv_file.read()
-        filename = (csv_file.filename or '').lower()
-        incoming_fields: List[str] = []
-        rows_list: List[Dict[str, str]] = []
-        txt = ''
-        delim = ','
-
-        if filename.endswith('.xlsx') or filename.endswith('.xlsm'):
-            if not HAS_XLSX:
-                raise RuntimeError('Поддержка Excel не установлена на сервере')
-            wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-            ws = wb.active
-            headers: List[str] = []
-            for i, row in enumerate(ws.iter_rows(values_only=True)):
-                cells = [(c if c is not None else '') for c in row]
-                if not any(str(c).strip() for c in cells): continue
-                if not headers:
-                    candidate = [str(c).strip() for c in cells]
-                    tech = all(h.lower().startswith('column') or h.lower().startswith('unnamed') or h == '' for h in candidate)
-                    non_empty = [h for h in candidate if h]
-                    if tech or len(non_empty) < 3: continue
-                    headers = candidate; continue
-                d: Dict[str, str] = {}
-                for idx, h in enumerate(headers):
-                    val = '' if idx >= len(cells) or cells[idx] is None else str(cells[idx])
-                    d[h] = val
-                rows_list.append(d)
-            if not headers or not rows_list:
-                raise ValueError('Excel: нераспознан заголовок или нет данных')
-        else:
-            raw_txt = data.decode('utf-8-sig', errors='ignore')
-            txt, delim = normalize_csv_and_get_delimiter(raw_txt)
-            if not txt:
-                raise ValueError('CSV пустой или нераспознанный формат')
-            dict_reader = csv.DictReader(io.StringIO(txt), delimiter=delim)
-            incoming_fields = list(dict_reader.fieldnames or [])
-            rows_list = [row for row in dict_reader]
+        filename = (csv_file.filename or '')
+        rows_list = _parse_uploaded_table(data, filename)
 
         total = len(rows_list)
         if state:
@@ -916,9 +913,8 @@ async def generate(
         mem_zip = io.BytesIO()
         processed_count = 0
         loop = asyncio.get_event_loop()
-        tasks = []
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:  # сериализуем LO
             with zipfile.ZipFile(mem_zip, "w", zipfile.ZIP_DEFLATED) as zf:
                 for row_num, row in enumerate(rows_list, 1):
                     try:
@@ -962,16 +958,18 @@ async def generate(
                             context["Имя"] = pad_name + context.get("Имя", "")
                             context["Тренинг"] = pad_course + context.get("Тренинг", "")
 
-                        async def render_one(docx_path=docx_path, context=context, cert_id=cert_id,
-                                             last_name=last_name, first_name=first_name, group=group):
+                        def render_sync():
                             adjust = (group == "online")
-                            pdf_bytes = await loop.run_in_executor(
-                                executor, render_docx_template, docx_path, context, adjust
-                            )
-                            fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                            return fname, pdf_bytes
+                            return render_docx_template(docx_path, context, adjust)
 
-                        tasks.append(render_one())
+                        pdf_bytes = await loop.run_in_executor(executor, render_sync)
+                        fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                        zf.writestr(fname, pdf_bytes)
+                        processed_count += 1
+                        if state:
+                            state.processed = processed_count
+                            state.message = f"Готово {processed_count} из {total}"
+                            await emit(job_id)
                     except Exception as e:
                         logger.error(f"Error preparing row {row_num}: {str(e)}")
                         if state:
@@ -980,36 +978,13 @@ async def generate(
                             await emit(job_id)
                         continue
 
-                async for fut in _as_completed_iter(tasks):
-                    fname, pdf_bytes = await fut
-                    zf.writestr(fname, pdf_bytes)
-                    processed_count += 1
-                    if state:
-                        state.processed = processed_count
-                        state.message = f"Готово {processed_count} из {total}"
-                        await emit(job_id)
-
         if processed_count == 0:
-            try:
-                if not incoming_fields and txt:
-                    reader2 = csv.DictReader(io.StringIO(txt), delimiter=delim)
-                    incoming_fields = list(reader2.fieldnames or [])
-            except Exception:
-                incoming_fields = []
-            required = [
-                "Имя/Name", "Фамилия/Surname", "Название тренинга/Название",
-                "Даты/Дата", "ID/Id", "(опц.) Город/City", "(опц.) Страна/Country"
-            ]
-            hint = (
-                "CSV распознан, но ни одной корректной строки не найдено. "
-                "Проверьте заголовки и обязательные поля. Требуемые колонки: "
-                + ", ".join(required)
-            )
+            hint = "CSV/Excel распознан, но ни одной корректной строки не найдено."
             if state:
                 state.stage = "error"
                 state.message = "Нет валидных строк"
                 await emit(job_id)
-            return PlainTextResponse(hint + "\n" + f"Полученные колонки: {incoming_fields}", status_code=400)
+            return PlainTextResponse(hint, status_code=400)
 
         mem_zip.seek(0)
         zip_bytes = mem_zip.getvalue()
@@ -1056,38 +1031,8 @@ async def generate_async(
         await emit(job_id)
 
         data = await csv_file.read()
-        filename = (csv_file.filename or '').lower()
-        rows_list: List[Dict[str, str]] = []
-
-        if filename.endswith('.xlsx') or filename.endswith('.xlsm'):
-            if not HAS_XLSX:
-                raise RuntimeError('Поддержка Excel не установлена на сервере')
-            wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-            ws = wb.active
-            headers: List[str] = []
-            for i, row in enumerate(ws.iter_rows(values_only=True)):
-                cells = [(c if c is not None else '') for c in row]
-                if not any(str(c).strip() for c in cells): continue
-                if not headers:
-                    candidate = [str(c).strip() for c in cells]
-                    tech = all(h.lower().startswith('column') or h.lower().startswith('unnamed') or h == '' for h in candidate)
-                    non_empty = [h for h in candidate if h]
-                    if tech or len(non_empty) < 3: continue
-                    headers = candidate; continue
-                d: Dict[str, str] = {}
-                for idx, h in enumerate(headers):
-                    val = '' if idx >= len(cells) or cells[idx] is None else str(cells[idx])
-                    d[h] = val
-                rows_list.append(d)
-            if not headers or not rows_list:
-                raise ValueError('Excel: нераспознан заголовок или нет данных')
-        else:
-            raw_txt = data.decode('utf-8-sig', errors='ignore')
-            txt, delim = normalize_csv_and_get_delimiter(raw_txt)
-            if not txt:
-                raise ValueError('CSV пустой или нераспознанный формат')
-            dict_reader = csv.DictReader(io.StringIO(txt), delimiter=delim)
-            rows_list = [row for row in dict_reader]
+        filename = (csv_file.filename or '')
+        rows_list = _parse_uploaded_table(data, filename)
 
         total = len(rows_list)
         state.total = total
@@ -1101,8 +1046,8 @@ async def generate_async(
                 mem_zip = io.BytesIO()
                 processed_count = 0
                 loop = asyncio.get_event_loop()
-                tasks = []
-                with ThreadPoolExecutor(max_workers=2) as executor:
+
+                with ThreadPoolExecutor(max_workers=1) as executor:  # сериализуем LO
                     with zipfile.ZipFile(mem_zip, "w", zipfile.ZIP_DEFLATED) as zf:
                         for row_num, row in enumerate(rows_list, 1):
                             try:
@@ -1146,30 +1091,23 @@ async def generate_async(
                                     context["Имя"] = pad_name + context.get("Имя", "")
                                     context["Тренинг"] = pad_course + context.get("Тренинг", "")
 
-                                async def render_one(docx_path=docx_path, context=context, cert_id=cert_id,
-                                                     last_name=last_name, first_name=first_name, group=group):
+                                def render_sync():
                                     adjust = (group == "online")
-                                    pdf_bytes = await loop.run_in_executor(
-                                        executor, render_docx_template, docx_path, context, adjust
-                                    )
-                                    fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
-                                    return fname, pdf_bytes
+                                    return render_docx_template(docx_path, context, adjust)
 
-                                tasks.append(render_one())
+                                pdf_bytes = await loop.run_in_executor(executor, render_sync)
+                                fname = f"{sanitize_filename(cert_id)}_{sanitize_filename(last_name)}_{sanitize_filename(first_name)}.pdf"
+                                zf.writestr(fname, pdf_bytes)
+                                processed_count += 1
+                                state.processed = processed_count
+                                state.message = f"Готово {processed_count} из {total}"
+                                await emit(job_id)
                             except Exception as e:
                                 logger.error(f"Error preparing row {row_num}: {str(e)}")
                                 state.errors += 1
                                 state.message = f"Ошибка в строке {row_num}"
                                 await emit(job_id)
                                 continue
-
-                        async for fut in _as_completed_iter(tasks):
-                            fname, pdf_bytes = await fut
-                            zf.writestr(fname, pdf_bytes)
-                            processed_count += 1
-                            state.processed = processed_count
-                            state.message = f"Готово {processed_count} из {total}"
-                            await emit(job_id)
 
                 if processed_count == 0:
                     state.stage = "error"
