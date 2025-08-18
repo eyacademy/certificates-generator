@@ -655,7 +655,7 @@ def render_docx_template(
                 "v":   "urn:schemas-microsoft-com:vml",
             }
             # twips: 1 pt = 20 twips; 1 см ≈ 567 twips
-            COURSE_LEFT_TWIPS    = 100  # общий левый отступ курса (обе строки)  ≈ 0.46 см
+            COURSE_LEFT_TWIPS    = 120  # общий левый отступ курса (обе строки)  ≈ 0.46 см
             COURSE_HANGING_TWIPS = 60   # «висячий» отступ: 2-я строка правее 1-й  ≈ 1.05 мм
             DATE_LEFT_TWIPS      = 130  # дата чуть правее                           ≈ 0.60 см
 
