@@ -579,22 +579,22 @@ def render_docx_template(
 ) -> bytes:
     """
     Рендерит DOCX и (в online-режиме) аккуратно выравнивает:
-    - курс (первая строка чуть левее второй);
-    - дату (чуть правее).
-    Делает «репак» ZIP, чтобы не было дублей частей DOCX.
+    - курс: первая строка чуть левее второй (за счёт w:ind/@w:hanging)
+    - дату: немного правее
+    Делает «репак» архива DOCX без дублей частей (LibreOffice не падает).
     """
     from docxtpl import DocxTemplate
     import zipfile, shutil
     from xml.etree import ElementTree as ET
 
-    # 1) Рендер шаблона во временный DOCX
+    # 1) Рендер во временный DOCX
     doc = DocxTemplate(docx_path)
     doc.render(context)
     tmp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
     doc.save(tmp_docx.name)
     tmp_docx.close()
 
-    # вспомогательная: безопасно заменить части в DOCX без дублей
+    # Репак без дубликатов: заменяем части либо добавляем, не плодя вторые копии
     def _repack_docx_replace(path: str, replacements: Dict[str, bytes]) -> None:
         if not replacements:
             return
@@ -613,11 +613,10 @@ def render_docx_template(
         shutil.move(tmp_out, path)
 
     if adjust_online_course_indent:
-        # 2) (опционально) если курс не в текстбоксе — поправим обычный параграф через python-docx
+        # 2) Если курс случайно не в текстбоксе — правим обычный параграф (без экстремальных значений)
         try:
             from docx import Document
             from docx.shared import Pt
-            from docx.enum.text import WD_ALIGN_PARAGRAPH
             d = Document(tmp_docx.name)
 
             def all_paragraphs(docx):
@@ -637,17 +636,6 @@ def render_docx_template(
 
             paragraphs = all_paragraphs(d)
             target_course = norm((context or {}).get("Тренинг", ""))
-            target_name   = norm((context or {}).get("Имя", ""))
-
-            name_indent = None
-            name_align = None
-            if target_name:
-                for p in paragraphs:
-                    if target_name[:20] in norm(p.text):
-                        name_indent = p.paragraph_format.left_indent
-                        name_align = p.alignment
-                        break
-
             course_para = None
             if target_course:
                 head = " ".join(target_course.split()[:3])
@@ -655,39 +643,31 @@ def render_docx_template(
                     if head and head in norm(p.text):
                         course_para = p
                         break
-
             if course_para is not None:
-                # если нашли не в текстбоксе — просто чуть подвигать влево
-                if name_indent is not None:
-                    course_para.paragraph_format.left_indent = name_indent
-                else:
-                    course_para.paragraph_format.left_indent = Pt(course_indent_pts)
+                course_para.paragraph_format.left_indent = Pt(course_indent_pts)  # мягкий базовый отступ
                 course_para.paragraph_format.first_line_indent = Pt(0)
-                if name_align in (WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT):
-                    course_para.alignment = name_align
                 d.save(tmp_docx.name)
         except Exception as e:
             logging.warning(f"Docx paragraph adjust skipped: {e}")
 
-        # 3) ТОНКАЯ НАСТРОЙКА внутри текстбоксов (wps:txbx и v:textbox)
+        # 3) Точная настройка внутри ТЕКСТБОКСОВ (wps:txbx и v:textbox)
         try:
             ns = {
                 "w":   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
                 "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
                 "v":   "urn:schemas-microsoft-com:vml",
             }
-            # --- Настраиваемые значения (twips: 1 pt = 20 twips; 1 см ≈ 567 twips)
-            COURSE_LEFT_TWIPS      = 300   # базовый левый отступ курса (≈ 0.53 см) — обе строки
-            COURSE_FIRSTLINE_TWIPS = -60   # первая строка на 60 twips левее базового (≈ −0.11 см)
-            DATE_LEFT_TWIPS        = 340   # дата чуть правее (≈ 0.60 см)
+            # twips: 1 pt = 20 twips; 1 см ≈ 567 twips
+            # ПОД КОРРЕКТИРОВКУ:
+            COURSE_LEFT_TWIPS      = 260  # общий левый отступ курса (обе строки) ~ 0.46 см (чуть левее, чем раньше)
+            COURSE_HANGING_TWIPS   = 40   # «висячий» отступ: вторая и последующие строки правее первой ~ 0.07 см
+            DATE_LEFT_TWIPS        = 380  # дату чуть правее ~ 0.67 см
 
             def norm(s: str) -> str:
                 return " ".join((s or "").split()).lower()
 
-            # маркеры для поиска абзацев
             course_text = norm((context or {}).get("Тренинг", ""))
             course_head = " ".join(course_text.split()[:3]) if course_text else ""
-
             year  = str((context or {}).get("Год", "")).strip()
             month = norm((context or {}).get("Месяц1", ""))
             city  = norm((context or {}).get("Город", ""))
@@ -696,7 +676,6 @@ def render_docx_template(
                 return bool(course_head) and (course_head in text)
 
             def is_date_para(text: str) -> bool:
-                # матчим «месяц+год» или город — обычно хватает одного из признаков
                 return (bool(month) and month in text and bool(year) and year in text) or (bool(city) and city in text)
 
             replacements: Dict[str, bytes] = {}
@@ -713,23 +692,25 @@ def render_docx_template(
                         return norm("".join(t.text or "" for t in p.findall(".//w:t", ns)))
 
                     changed = False
-                    # --- Новые текстбоксы
+
+                    # --- Новые текстбоксы (DrawingML)
                     for p in root.findall(".//wps:txbx//w:p", ns):
                         t = para_text(p)
                         if is_course_para(t):
                             pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
                             ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
                             ind.set("{%s}left" % ns["w"], str(COURSE_LEFT_TWIPS))
-                            ind.set("{%s}firstLine" % ns["w"], str(COURSE_FIRSTLINE_TWIPS))  # первая строка левее
-                            # на всякий случай уберём «hanging», чтобы он не перекрывал firstLine
-                            if ind.get("{%s}hanging" % ns["w"]): ind.attrib.pop("{%s}hanging" % ns["w"], None)
+                            ind.set("{%s}hanging" % ns["w"], str(COURSE_HANGING_TWIPS))  # 2-я строка чуть правее
+                            if ind.get("{%s}firstLine" % ns["w"]):  # убираем, чтобы не конфликтовало
+                                ind.attrib.pop("{%s}firstLine" % ns["w"], None)
                             changed = True
                         elif is_date_para(t):
                             pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
                             ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
-                            ind.set("{%s}left" % ns["w"], str(DATE_LEFT_TWIPS))            # дату немного правее
+                            ind.set("{%s}left" % ns["w"], str(DATE_LEFT_TWIPS))
                             ind.set("{%s}firstLine" % ns["w"], "0")
-                            if ind.get("{%s}hanging" % ns["w"]): ind.attrib.pop("{%s}hanging" % ns["w"], None)
+                            if ind.get("{%s}hanging" % ns["w"]):
+                                ind.attrib.pop("{%s}hanging" % ns["w"], None)
                             changed = True
 
                     # --- Старые VML-текстбоксы
@@ -739,15 +720,17 @@ def render_docx_template(
                             pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
                             ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
                             ind.set("{%s}left" % ns["w"], str(COURSE_LEFT_TWIPS))
-                            ind.set("{%s}firstLine" % ns["w"], str(COURSE_FIRSTLINE_TWIPS))
-                            if ind.get("{%s}hanging" % ns["w"]): ind.attrib.pop("{%s}hanging" % ns["w"], None)
+                            ind.set("{%s}hanging" % ns["w"], str(COURSE_HANGING_TWIPS))
+                            if ind.get("{%s}firstLine" % ns["w"]):
+                                ind.attrib.pop("{%s}firstLine" % ns["w"], None)
                             changed = True
                         elif is_date_para(t):
                             pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
                             ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
                             ind.set("{%s}left" % ns["w"], str(DATE_LEFT_TWIPS))
                             ind.set("{%s}firstLine" % ns["w"], "0")
-                            if ind.get("{%s}hanging" % ns["w"]): ind.attrib.pop("{%s}hanging" % ns["w"], None)
+                            if ind.get("{%s}hanging" % ns["w"]):
+                                ind.attrib.pop("{%s}hanging" % ns["w"], None)
                             changed = True
 
                     if changed:
