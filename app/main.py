@@ -575,29 +575,28 @@ def render_docx_template(
     docx_path: str,
     context: Dict[str, str],
     adjust_online_course_indent: bool = False,
-    course_indent_pts: int = 18,
+    course_indent_pts: int = 18,   # запасной отступ для обычных параграфов
 ) -> bytes:
-    """
-    Рендерит DOCX шаблон с Jinja-переменными.
-    Если adjust_online_course_indent=True (для online), пытается сдвинуть абзац курса вправо:
-      1) ищем абзац по первым 2-3 словам (нормализация пробелов/переносов);
-      2) выравниваем отступ как у имени, либо задаем фиксированный отступ;
-      3) если у имени выравнивание CENTER/RIGHT — применяем то же к курсу.
-    В любом случае в ONLINE мы добавляем паддинг NBSP в контекст (см. ниже),
-    чтобы сработало даже если текст курса находится внутри shape.
-    """
+    """Рендерит DOCX и (в online-режиме) сдвигает курс вправо так,
+    чтобы переносы строк в текстбоксе тоже были смещены."""
+    from docxtpl import DocxTemplate
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    # 1) Рендер шаблона во временный DOCX
     doc = DocxTemplate(docx_path)
     doc.render(context)
-    temp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
-    doc.save(temp_docx.name)
-    temp_docx.close()
+    tmp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
+    doc.save(tmp_docx.name)
+    tmp_docx.close()
 
     if adjust_online_course_indent:
+        # 2) Попытка сдвигать обычные параграфы через python-docx (если курс НЕ в текстбоксе)
         try:
             from docx import Document
             from docx.shared import Pt
             from docx.enum.text import WD_ALIGN_PARAGRAPH
-            d = Document(temp_docx.name)
+            d = Document(tmp_docx.name)
 
             def all_paragraphs(docx):
                 pars = list(docx.paragraphs)
@@ -611,12 +610,12 @@ def render_docx_template(
                 walk_tables(docx.tables, pars)
                 return pars
 
-            paragraphs = all_paragraphs(d)
             def norm(s: str) -> str:
-                return " ".join((s or "").strip().lower().split())
+                return " ".join((s or "").split()).lower()
 
+            paragraphs = all_paragraphs(d)
             target_course = norm((context or {}).get("Тренинг", ""))
-            target_name = norm((context or {}).get("Имя", ""))
+            target_name   = norm((context or {}).get("Имя", ""))
 
             name_indent = None
             name_align = None
@@ -627,6 +626,7 @@ def render_docx_template(
                         name_align = p.alignment
                         break
 
+            # найдём курс среди обычных параграфов
             course_para = None
             if target_course:
                 head = " ".join(target_course.split()[:3])
@@ -636,6 +636,7 @@ def render_docx_template(
                         break
 
             if course_para is not None:
+                # выставим отступ абзацу
                 if name_indent is not None:
                     course_para.paragraph_format.left_indent = name_indent
                 else:
@@ -643,14 +644,70 @@ def render_docx_template(
                 course_para.paragraph_format.first_line_indent = Pt(0)
                 if name_align in (WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT):
                     course_para.alignment = name_align
-                d.save(temp_docx.name)
+                d.save(tmp_docx.name)
         except Exception as e:
-            logging.warning(f"Course indent adjust skipped: {e}")
+            logging.warning(f"Docx paragraph adjust skipped: {e}")
 
-    pdf_path = docx_to_pdf_cached(temp_docx.name)
-    with open(pdf_path, 'rb') as f:
+        # 3) ГЛАВНОЕ: сдвигаем абзац курса внутри ТЕКСТБОКСОВ (wps:txbx и v:textbox)
+        try:
+            ns = {
+                "w":   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+                "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+                "v":   "urn:schemas-microsoft-com:vml",
+            }
+            # сколько сдвигать в текстбоксе (twips) — ~0.5 см
+            LEFT_TWIPS = 360
+
+            def norm(s: str) -> str:
+                return " ".join((s or "").split()).lower()
+
+            target_course = norm((context or {}).get("Тренинг", ""))
+            head = " ".join(target_course.split()[:3]) if target_course else ""
+            if head:
+                with zipfile.ZipFile(tmp_docx.name, "a") as z:
+                    # какие части патчим
+                    candidates = ["word/document.xml"] + \
+                                 [n for n in z.namelist() if n.startswith("word/header") and n.endswith(".xml")]
+
+                    for part in candidates:
+                        try:
+                            xml = z.read(part)
+                        except KeyError:
+                            continue
+                        root = ET.fromstring(xml)
+
+                        def para_text(p):
+                            return norm("".join(t.text or "" for t in p.findall(".//w:t", ns)))
+
+                        changed = False
+                        # параграфы внутри новых текстбоксов
+                        for p in root.findall(".//wps:txbx//w:p", ns):
+                            if head in para_text(p):
+                                pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
+                                ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
+                                ind.set("{%s}left" % ns["w"], str(LEFT_TWIPS))
+                                ind.set("{%s}firstLine" % ns["w"], "0")
+                                changed = True
+                        # параграфы внутри старых VML-текстбоксов
+                        for p in root.findall(".//v:textbox//w:p", ns):
+                            if head in para_text(p):
+                                pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
+                                ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
+                                ind.set("{%s}left" % ns["w"], str(LEFT_TWIPS))
+                                ind.set("{%s}firstLine" % ns["w"], "0")
+                                changed = True
+
+                        if changed:
+                            new_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                            z.writestr(part, new_xml)
+        except Exception as e:
+            logging.warning(f"Textbox indent adjust skipped: {e}")
+
+    # 4) Конвертация в PDF
+    pdf_path = docx_to_pdf_cached(tmp_docx.name)
+    with open(pdf_path, "rb") as f:
         pdf_bytes = f.read()
-    os.unlink(temp_docx.name)
+    os.unlink(tmp_docx.name)
     return pdf_bytes
 
 
