@@ -577,21 +577,43 @@ def render_docx_template(
     adjust_online_course_indent: bool = False,
     course_indent_pts: int = 18,   # запасной отступ для обычных параграфов
 ) -> bytes:
-    """Рендерит DOCX и (в online-режиме) сдвигает курс вправо так,
-    чтобы переносы строк в текстбоксе тоже были смещены."""
+    """
+    Рендерит DOCX и (в online-режиме) сдвигает курс вправо так,
+    чтобы переносы строк в текстбоксе тоже были смещены.
+    ВАЖНО: правка DOCX делается через «репак» ZIP, чтобы не было дублей частей.
+    """
     from docxtpl import DocxTemplate
-    import zipfile
+    import zipfile, shutil
     from xml.etree import ElementTree as ET
 
-    # 1) Рендер шаблона во временный DOCX
+    # 1) Рендер во временный DOCX
     doc = DocxTemplate(docx_path)
     doc.render(context)
     tmp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
     doc.save(tmp_docx.name)
     tmp_docx.close()
 
+    # --- вспомогательная функция: безопасная замена частей в DOCX без дублей
+    def _repack_docx_replace(path: str, replacements: Dict[str, bytes]) -> None:
+        if not replacements:
+            return
+        tmp_out = tempfile.NamedTemporaryFile(suffix=".docx", delete=False).name
+        with zipfile.ZipFile(path, "r") as zin, zipfile.ZipFile(tmp_out, "w", zipfile.ZIP_DEFLATED) as zout:
+            existing = set()
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+                if item.filename in replacements:
+                    data = replacements[item.filename]
+                zout.writestr(item, data)
+                existing.add(item.filename)
+            # если хотим добавить новую часть
+            for name, data in replacements.items():
+                if name not in existing:
+                    zout.writestr(name, data)
+        shutil.move(tmp_out, path)
+
     if adjust_online_course_indent:
-        # 2) Попытка сдвигать обычные параграфы через python-docx (если курс НЕ в текстбоксе)
+        # 2) Сдвиг обычного параграфа (если курс не в текстбоксе)
         try:
             from docx import Document
             from docx.shared import Pt
@@ -626,7 +648,6 @@ def render_docx_template(
                         name_align = p.alignment
                         break
 
-            # найдём курс среди обычных параграфов
             course_para = None
             if target_course:
                 head = " ".join(target_course.split()[:3])
@@ -636,7 +657,6 @@ def render_docx_template(
                         break
 
             if course_para is not None:
-                # выставим отступ абзацу
                 if name_indent is not None:
                     course_para.paragraph_format.left_indent = name_indent
                 else:
@@ -648,28 +668,26 @@ def render_docx_template(
         except Exception as e:
             logging.warning(f"Docx paragraph adjust skipped: {e}")
 
-        # 3) ГЛАВНОЕ: сдвигаем абзац курса внутри ТЕКСТБОКСОВ (wps:txbx и v:textbox)
+        # 3) Сдвиг параграфа курса внутри ТЕКСТБОКСОВ (wps:txbx и v:textbox) + репак без дублей
         try:
             ns = {
                 "w":   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
                 "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
                 "v":   "urn:schemas-microsoft-com:vml",
             }
-            # сколько сдвигать в текстбоксе (twips) — ~0.5 см
-            LEFT_TWIPS = 360
+            LEFT_TWIPS = 360  # ~0.64 см
 
             def norm(s: str) -> str:
                 return " ".join((s or "").split()).lower()
 
             target_course = norm((context or {}).get("Тренинг", ""))
             head = " ".join(target_course.split()[:3]) if target_course else ""
-            if head:
-                with zipfile.ZipFile(tmp_docx.name, "a") as z:
-                    # какие части патчим
-                    candidates = ["word/document.xml"] + \
-                                 [n for n in z.namelist() if n.startswith("word/header") and n.endswith(".xml")]
 
-                    for part in candidates:
+            replacements: Dict[str, bytes] = {}
+            if head:
+                with zipfile.ZipFile(tmp_docx.name, "r") as z:
+                    parts = ["word/document.xml"] + [n for n in z.namelist() if n.startswith("word/header") and n.endswith(".xml")]
+                    for part in parts:
                         try:
                             xml = z.read(part)
                         except KeyError:
@@ -680,7 +698,7 @@ def render_docx_template(
                             return norm("".join(t.text or "" for t in p.findall(".//w:t", ns)))
 
                         changed = False
-                        # параграфы внутри новых текстбоксов
+                        # новые текстбоксы
                         for p in root.findall(".//wps:txbx//w:p", ns):
                             if head in para_text(p):
                                 pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
@@ -688,7 +706,7 @@ def render_docx_template(
                                 ind.set("{%s}left" % ns["w"], str(LEFT_TWIPS))
                                 ind.set("{%s}firstLine" % ns["w"], "0")
                                 changed = True
-                        # параграфы внутри старых VML-текстбоксов
+                        # старые VML-текстбоксы
                         for p in root.findall(".//v:textbox//w:p", ns):
                             if head in para_text(p):
                                 pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
@@ -699,7 +717,9 @@ def render_docx_template(
 
                         if changed:
                             new_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-                            z.writestr(part, new_xml)
+                            replacements[part] = new_xml
+
+            _repack_docx_replace(tmp_docx.name, replacements)
         except Exception as e:
             logging.warning(f"Textbox indent adjust skipped: {e}")
 
@@ -709,7 +729,6 @@ def render_docx_template(
         pdf_bytes = f.read()
     os.unlink(tmp_docx.name)
     return pdf_bytes
-
 
 # -----------------------------------------------------------------------------
 # SSE progress
