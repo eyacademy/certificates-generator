@@ -575,25 +575,26 @@ def render_docx_template(
     docx_path: str,
     context: Dict[str, str],
     adjust_online_course_indent: bool = False,
-    course_indent_pts: int = 18,   # запасной отступ для обычных параграфов
+    course_indent_pts: int = 18,
 ) -> bytes:
     """
-    Рендерит DOCX и (в online-режиме) сдвигает курс вправо так,
-    чтобы переносы строк в текстбоксе тоже были смещены.
-    ВАЖНО: правка DOCX делается через «репак» ZIP, чтобы не было дублей частей.
+    Рендерит DOCX и (в online-режиме) аккуратно выравнивает:
+    - курс (первая строка чуть левее второй);
+    - дату (чуть правее).
+    Делает «репак» ZIP, чтобы не было дублей частей DOCX.
     """
     from docxtpl import DocxTemplate
     import zipfile, shutil
     from xml.etree import ElementTree as ET
 
-    # 1) Рендер во временный DOCX
+    # 1) Рендер шаблона во временный DOCX
     doc = DocxTemplate(docx_path)
     doc.render(context)
     tmp_docx = tempfile.NamedTemporaryFile(suffix=".docx", delete=False)
     doc.save(tmp_docx.name)
     tmp_docx.close()
 
-    # --- вспомогательная функция: безопасная замена частей в DOCX без дублей
+    # вспомогательная: безопасно заменить части в DOCX без дублей
     def _repack_docx_replace(path: str, replacements: Dict[str, bytes]) -> None:
         if not replacements:
             return
@@ -606,14 +607,13 @@ def render_docx_template(
                     data = replacements[item.filename]
                 zout.writestr(item, data)
                 existing.add(item.filename)
-            # если хотим добавить новую часть
             for name, data in replacements.items():
                 if name not in existing:
                     zout.writestr(name, data)
         shutil.move(tmp_out, path)
 
     if adjust_online_course_indent:
-        # 2) Сдвиг обычного параграфа (если курс не в текстбоксе)
+        # 2) (опционально) если курс не в текстбоксе — поправим обычный параграф через python-docx
         try:
             from docx import Document
             from docx.shared import Pt
@@ -657,6 +657,7 @@ def render_docx_template(
                         break
 
             if course_para is not None:
+                # если нашли не в текстбоксе — просто чуть подвигать влево
                 if name_indent is not None:
                     course_para.paragraph_format.left_indent = name_indent
                 else:
@@ -668,56 +669,89 @@ def render_docx_template(
         except Exception as e:
             logging.warning(f"Docx paragraph adjust skipped: {e}")
 
-        # 3) Сдвиг параграфа курса внутри ТЕКСТБОКСОВ (wps:txbx и v:textbox) + репак без дублей
+        # 3) ТОНКАЯ НАСТРОЙКА внутри текстбоксов (wps:txbx и v:textbox)
         try:
             ns = {
                 "w":   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
                 "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
                 "v":   "urn:schemas-microsoft-com:vml",
             }
-            LEFT_TWIPS = 360  # ~0.64 см
+            # --- Настраиваемые значения (twips: 1 pt = 20 twips; 1 см ≈ 567 twips)
+            COURSE_LEFT_TWIPS      = 300   # базовый левый отступ курса (≈ 0.53 см) — обе строки
+            COURSE_FIRSTLINE_TWIPS = -60   # первая строка на 60 twips левее базового (≈ −0.11 см)
+            DATE_LEFT_TWIPS        = 340   # дата чуть правее (≈ 0.60 см)
 
             def norm(s: str) -> str:
                 return " ".join((s or "").split()).lower()
 
-            target_course = norm((context or {}).get("Тренинг", ""))
-            head = " ".join(target_course.split()[:3]) if target_course else ""
+            # маркеры для поиска абзацев
+            course_text = norm((context or {}).get("Тренинг", ""))
+            course_head = " ".join(course_text.split()[:3]) if course_text else ""
+
+            year  = str((context or {}).get("Год", "")).strip()
+            month = norm((context or {}).get("Месяц1", ""))
+            city  = norm((context or {}).get("Город", ""))
+
+            def is_course_para(text: str) -> bool:
+                return bool(course_head) and (course_head in text)
+
+            def is_date_para(text: str) -> bool:
+                # матчим «месяц+год» или город — обычно хватает одного из признаков
+                return (bool(month) and month in text and bool(year) and year in text) or (bool(city) and city in text)
 
             replacements: Dict[str, bytes] = {}
-            if head:
-                with zipfile.ZipFile(tmp_docx.name, "r") as z:
-                    parts = ["word/document.xml"] + [n for n in z.namelist() if n.startswith("word/header") and n.endswith(".xml")]
-                    for part in parts:
-                        try:
-                            xml = z.read(part)
-                        except KeyError:
-                            continue
-                        root = ET.fromstring(xml)
+            with zipfile.ZipFile(tmp_docx.name, "r") as z:
+                parts = ["word/document.xml"] + [n for n in z.namelist() if n.startswith("word/header") and n.endswith(".xml")]
+                for part in parts:
+                    try:
+                        xml = z.read(part)
+                    except KeyError:
+                        continue
+                    root = ET.fromstring(xml)
 
-                        def para_text(p):
-                            return norm("".join(t.text or "" for t in p.findall(".//w:t", ns)))
+                    def para_text(p):
+                        return norm("".join(t.text or "" for t in p.findall(".//w:t", ns)))
 
-                        changed = False
-                        # новые текстбоксы
-                        for p in root.findall(".//wps:txbx//w:p", ns):
-                            if head in para_text(p):
-                                pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
-                                ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
-                                ind.set("{%s}left" % ns["w"], str(LEFT_TWIPS))
-                                ind.set("{%s}firstLine" % ns["w"], "0")
-                                changed = True
-                        # старые VML-текстбоксы
-                        for p in root.findall(".//v:textbox//w:p", ns):
-                            if head in para_text(p):
-                                pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
-                                ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
-                                ind.set("{%s}left" % ns["w"], str(LEFT_TWIPS))
-                                ind.set("{%s}firstLine" % ns["w"], "0")
-                                changed = True
+                    changed = False
+                    # --- Новые текстбоксы
+                    for p in root.findall(".//wps:txbx//w:p", ns):
+                        t = para_text(p)
+                        if is_course_para(t):
+                            pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
+                            ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
+                            ind.set("{%s}left" % ns["w"], str(COURSE_LEFT_TWIPS))
+                            ind.set("{%s}firstLine" % ns["w"], str(COURSE_FIRSTLINE_TWIPS))  # первая строка левее
+                            # на всякий случай уберём «hanging», чтобы он не перекрывал firstLine
+                            if ind.get("{%s}hanging" % ns["w"]): ind.attrib.pop("{%s}hanging" % ns["w"], None)
+                            changed = True
+                        elif is_date_para(t):
+                            pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
+                            ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
+                            ind.set("{%s}left" % ns["w"], str(DATE_LEFT_TWIPS))            # дату немного правее
+                            ind.set("{%s}firstLine" % ns["w"], "0")
+                            if ind.get("{%s}hanging" % ns["w"]): ind.attrib.pop("{%s}hanging" % ns["w"], None)
+                            changed = True
 
-                        if changed:
-                            new_xml = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-                            replacements[part] = new_xml
+                    # --- Старые VML-текстбоксы
+                    for p in root.findall(".//v:textbox//w:p", ns):
+                        t = para_text(p)
+                        if is_course_para(t):
+                            pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
+                            ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
+                            ind.set("{%s}left" % ns["w"], str(COURSE_LEFT_TWIPS))
+                            ind.set("{%s}firstLine" % ns["w"], str(COURSE_FIRSTLINE_TWIPS))
+                            if ind.get("{%s}hanging" % ns["w"]): ind.attrib.pop("{%s}hanging" % ns["w"], None)
+                            changed = True
+                        elif is_date_para(t):
+                            pPr = p.find("w:pPr", ns) or ET.SubElement(p, "{%s}pPr" % ns["w"])
+                            ind = pPr.find("w:ind", ns) or ET.SubElement(pPr, "{%s}ind" % ns["w"])
+                            ind.set("{%s}left" % ns["w"], str(DATE_LEFT_TWIPS))
+                            ind.set("{%s}firstLine" % ns["w"], "0")
+                            if ind.get("{%s}hanging" % ns["w"]): ind.attrib.pop("{%s}hanging" % ns["w"], None)
+                            changed = True
+
+                    if changed:
+                        replacements[part] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
             _repack_docx_replace(tmp_docx.name, replacements)
         except Exception as e:
