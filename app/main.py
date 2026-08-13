@@ -47,8 +47,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("certefikati")
 
 # === Online visual tweaks (padding with non-breaking spaces) ===
-ONLINE_NAME_PAD_NBSP   = 2   # \u00A0 для Имени
-ONLINE_COURSE_PAD_NBSP = 1   # \u00A0 для Курса — держим скромно, чтобы не тянуть только первую строку
+ONLINE_NAME_PAD_NBSP   = 0   # ОТКЛЮЧЕНО: позиция задана в шаблоне
+ONLINE_COURSE_PAD_NBSP = 0   # ОТКЛЮЧЕНО: позиция задана в шаблоне
 NBSP = "\u00A0"
 
 # lock для сериализации LibreOffice (soffice) конвертаций
@@ -350,6 +350,13 @@ MONTH_GEN = {
     7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December",
 }
 
+def _clean_value(v) -> str:
+    """Чистит значение: убирает неразрывные пробелы и обрезает края."""
+    s = "" if v is None else str(v)
+    s = s.replace("\u00a0", " ").replace("\u202f", " ").replace("\u2007", " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def _norm_key(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.sub(r"\s+", " ", s)
@@ -371,7 +378,7 @@ def _build_row_with_normalized_keys(row: Dict[str, str]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for k, v in (row or {}).items():
         if k is None: continue
-        val = (v or "").strip()
+        val = _clean_value(v)
         out[k] = val
         nk = _norm_key(str(k))
         out[nk] = val
@@ -387,8 +394,8 @@ def _get_field(row: Dict[str, str], canonical: str) -> str:
     aliases = KEY_ALIASES.get(canonical, set())
     for key in list(r.keys()):
         nk = _norm_key(str(key))
-        if nk in aliases: return (r[key] or "").strip()
-    return (r.get(canonical) or r.get(_norm_key(canonical)) or "").strip()
+        if nk in aliases: return _clean_value(r[key])
+    return _clean_value(r.get(canonical) or r.get(_norm_key(canonical)) or "")
 
 def detect_delimiter(text: str) -> str:
     sample = text[:4096]
@@ -493,7 +500,9 @@ def string_width_pt(text: str, size: int) -> float:
 
 def need_small_variant(full_name: str) -> bool:
     base_size = 28
-    max_width = 400
+    # блок имени в шаблоне — 620 px = 465 pt; замер идёт regular, рендер bold,
+    # поэтому берём с запасом
+    max_width = 540
     w = string_width_pt(full_name, base_size)
     return w > max_width
 
@@ -655,9 +664,9 @@ def render_docx_template(
                 "v":   "urn:schemas-microsoft-com:vml",
             }
             # twips: 1 pt = 20 twips; 1 см ≈ 567 twips
-            COURSE_LEFT_TWIPS    = 120  # общий левый отступ курса (обе строки)  ≈ 0.46 см
-            COURSE_HANGING_TWIPS = 60   # «висячий» отступ: 2-я строка правее 1-й  ≈ 1.05 мм
-            DATE_LEFT_TWIPS      = 130  # дата чуть правее                           ≈ 0.60 см
+            COURSE_LEFT_TWIPS    = 0    # ОБНУЛЕНО: сдвигало курс вправо
+            COURSE_HANGING_TWIPS = 0    # ОБНУЛЕНО
+            DATE_LEFT_TWIPS      = 0    # ОБНУЛЕНО: сдвигало дату вправо
 
             def norm(s: str) -> str:
                 return " ".join((s or "").split()).lower()
@@ -952,14 +961,8 @@ async def generate(
                             "Страна": country,
                         })
 
-                        if group == "online":
-                            pad_name = NBSP * ONLINE_NAME_PAD_NBSP
-                            pad_course = NBSP * ONLINE_COURSE_PAD_NBSP
-                            context["Имя"] = pad_name + context.get("Имя", "")
-                            context["Тренинг"] = pad_course + context.get("Тренинг", "")
-
                         def render_sync():
-                            adjust = (group == "online")
+                            adjust = False  # ОТКЛЮЧЕНО: координаты заданы в шаблоне
                             return render_docx_template(docx_path, context, adjust)
 
                         pdf_bytes = await loop.run_in_executor(executor, render_sync)
@@ -1085,14 +1088,8 @@ async def generate_async(
                                     "Страна": country,
                                 })
 
-                                if group == "online":
-                                    pad_name = NBSP * ONLINE_NAME_PAD_NBSP
-                                    pad_course = NBSP * ONLINE_COURSE_PAD_NBSP
-                                    context["Имя"] = pad_name + context.get("Имя", "")
-                                    context["Тренинг"] = pad_course + context.get("Тренинг", "")
-
                                 def render_sync():
-                                    adjust = (group == "online")
+                                    adjust = False  # ОТКЛЮЧЕНО: координаты заданы в шаблоне
                                     return render_docx_template(docx_path, context, adjust)
 
                                 pdf_bytes = await loop.run_in_executor(executor, render_sync)
