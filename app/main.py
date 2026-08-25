@@ -549,10 +549,20 @@ def docx_to_pdf_cached(docx_path: str) -> str:
     except Exception: pass
     profile_url = "file:///" + os.path.abspath(profile_dir).replace("\\", "/").lstrip("/")
 
+    # Явные опции экспорта PDF: без пережатия и без понижения DPI картинок
+    pdf_export_filter = (
+        'pdf:writer_pdf_Export:{'
+        '"Quality":{"type":"long","value":100},'
+        '"UseLosslessCompression":{"type":"boolean","value":true},'
+        '"ReduceImageResolution":{"type":"boolean","value":false},'
+        '"SelectPdfVersion":{"type":"long","value":0}'
+        '}'
+    )
+
     cmd_with_profile = [
         cmd[0], "--headless", "--norestore", "--nolockcheck",
         f"-env:UserInstallation={profile_url}",
-        "--convert-to", "pdf", "--outdir", out_dir, abs_docx,
+        "--convert-to", pdf_export_filter, "--outdir", out_dir, abs_docx,
     ]
 
     last_stdout = last_stderr = b""
