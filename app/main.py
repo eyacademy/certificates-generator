@@ -109,6 +109,20 @@ def ui():
             </div>
 
             <div class="form-group">
+                <label>Версия шаблона:</label>
+                <div class="radio-group">
+                    <div class="radio-item">
+                        <input type="radio" id="regionRu" name="region" value="ru" checked>
+                        <label for="regionRu">RU</label>
+                    </div>
+                    <div class="radio-item">
+                        <input type="radio" id="regionAz" name="region" value="az">
+                        <label for="regionAz">AZ</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
                 <label>Тип сертификата:</label>
                 <div class="radio-group">
                     <div class="radio-item">
@@ -156,6 +170,7 @@ def ui():
             const formData = new FormData();
             const file = fileInput.files[0];
             const mode = document.querySelector('input[name="mode"]:checked').value;
+            const region = document.querySelector('input[name="region"]:checked').value;
 
             if (!file) {
                 showStatus('Пожалуйста, выберите файл', 'error');
@@ -164,6 +179,7 @@ def ui():
 
             formData.append('csv_file', file);
             formData.append('mode', mode);
+            formData.append('region', region);
 
             const jobId = (window.crypto && crypto.randomUUID)
                 ? crypto.randomUUID() : ('job-' + Date.now() + '-' + Math.random().toString(16).slice(2));
@@ -283,6 +299,19 @@ app.add_middleware(
 # =============================================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates"))
+TEMPLATES_DIR_AZ = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates_AZ"))
+
+# ru -> Templates, az -> Templates_AZ (Баку)
+TEMPLATES_DIRS: Dict[str, str] = {
+    "ru": TEMPLATES_DIR,
+    "az": TEMPLATES_DIR_AZ,
+}
+DEFAULT_REGION = "ru"
+
+def resolve_templates_dir(region: Optional[str]) -> str:
+    """Возвращает папку шаблонов по региону. Неизвестное значение -> ru."""
+    key = (region or "").strip().lower()
+    return TEMPLATES_DIRS.get(key, TEMPLATES_DIRS[DEFAULT_REGION])
 
 FONTS_DIR_CANDIDATES = [
     os.path.abspath(os.path.join(BASE_DIR, "..", "fonts")),
@@ -836,27 +865,34 @@ def sample_excel():
     )
 
 @app.get("/check-templates")
-def check_templates():
-    missing_templates = []
-    available_templates = []
-    for group in ["print", "online"]:
-        for kind in ["duration_day", "2day_2month", "1day_1month"]:
-            for variant in ["normal", "small"]:
-                try:
-                    docx_name = DOCX_MAP[group][kind][variant]
-                    docx_path = os.path.join(TEMPLATES_DIR, docx_name)
-                    if os.path.exists(docx_path):
-                        available_templates.append(f"{group}/{kind}/{variant}: {docx_name}")
-                    else:
-                        missing_templates.append(f"{group}/{kind}/{variant}: {docx_name}")
-                except KeyError:
-                    missing_templates.append(f"{group}/{kind}/{variant}: NOT_FOUND_IN_MAP")
-    return {
-        "available_templates": available_templates,
-        "missing_templates": missing_templates,
-        "templates_dir": TEMPLATES_DIR,
-        "templates_dir_exists": os.path.exists(TEMPLATES_DIR)
-    }
+def check_templates(region: Optional[str] = None):
+    """Проверка наличия шаблонов. Без ?region= — отчёт сразу по всем регионам."""
+    regions = [region.strip().lower()] if region else list(TEMPLATES_DIRS.keys())
+
+    def check_one(reg: str) -> Dict[str, object]:
+        templates_dir = resolve_templates_dir(reg)
+        missing_templates = []
+        available_templates = []
+        for group in ["print", "online"]:
+            for kind in ["duration_day", "2day_2month", "1day_1month"]:
+                for variant in ["normal", "small"]:
+                    try:
+                        docx_name = DOCX_MAP[group][kind][variant]
+                        docx_path = os.path.join(templates_dir, docx_name)
+                        if os.path.exists(docx_path):
+                            available_templates.append(f"{group}/{kind}/{variant}: {docx_name}")
+                        else:
+                            missing_templates.append(f"{group}/{kind}/{variant}: {docx_name}")
+                    except KeyError:
+                        missing_templates.append(f"{group}/{kind}/{variant}: NOT_FOUND_IN_MAP")
+        return {
+            "available_templates": available_templates,
+            "missing_templates": missing_templates,
+            "templates_dir": templates_dir,
+            "templates_dir_exists": os.path.exists(templates_dir),
+        }
+
+    return {reg: check_one(reg) for reg in regions}
 
 
 # =============================================================================
@@ -906,10 +942,12 @@ def _parse_uploaded_table(data: bytes, filename: str) -> List[Dict[str, str]]:
 async def generate(
     csv_file: UploadFile = File(...),
     mode: str = Form(...),                  # print | online
+    region: str = Form(DEFAULT_REGION),     # ru | az
     job_id: Optional[str] = Form(None),
 ):
     try:
-        logger.info(f"Starting certificate generation for mode: {mode}")
+        templates_dir = resolve_templates_dir(region)
+        logger.info(f"Starting certificate generation for mode: {mode}, region: {region}")
         state: Optional[ProgressState] = None
         if job_id:
             state = get_progress(job_id)
@@ -957,7 +995,7 @@ async def generate(
 
                         group = "online" if is_online else "print"
                         docx_name = DOCX_MAP[group][kind][variant]
-                        docx_path = os.path.join(TEMPLATES_DIR, docx_name)
+                        docx_path = os.path.join(templates_dir, docx_name)
                         if not os.path.exists(docx_path):
                             raise FileNotFoundError(f"Template not found: {docx_path}")
 
@@ -1031,10 +1069,12 @@ async def generate(
 async def generate_async(
     csv_file: UploadFile = File(...),
     mode: str = Form(...),                  # print | online
+    region: str = Form(DEFAULT_REGION),     # ru | az
     job_id: Optional[str] = Form(None),
 ):
     try:
-        logger.info(f"Starting ASYNC certificate generation for mode: {mode}")
+        templates_dir = resolve_templates_dir(region)
+        logger.info(f"Starting ASYNC certificate generation for mode: {mode}, region: {region}")
 
         if not job_id:
             job_id = f"job-{int(time.time())}-{os.getpid()}-{id(csv_file)}"
@@ -1084,7 +1124,7 @@ async def generate_async(
 
                                 group = "online" if is_online else "print"
                                 docx_name = DOCX_MAP[group][kind][variant]
-                                docx_path = os.path.join(TEMPLATES_DIR, docx_name)
+                                docx_path = os.path.join(templates_dir, docx_name)
                                 if not os.path.exists(docx_path):
                                     raise FileNotFoundError(f"Template not found: {docx_path}")
 
