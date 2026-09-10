@@ -317,7 +317,13 @@ DEFAULT_REGION = "ru"
 def resolve_templates_dir(region: Optional[str]) -> str:
     """Возвращает папку шаблонов по региону. Неизвестное значение -> ru."""
     key = (region or "").strip().lower()
-    return TEMPLATES_DIRS.get(key, TEMPLATES_DIRS[DEFAULT_REGION])
+    path = TEMPLATES_DIRS.get(key, TEMPLATES_DIRS[DEFAULT_REGION])
+    if not os.path.isdir(path):
+        raise ValueError(
+            f"Папка шаблонов для региона '{key or DEFAULT_REGION}' не найдена на сервере: {path}. "
+            f"Проверьте, что она скопирована в образ (Dockerfile)."
+        )
+    return path
 
 FONTS_DIR_CANDIDATES = [
     os.path.abspath(os.path.join(BASE_DIR, "..", "fonts")),

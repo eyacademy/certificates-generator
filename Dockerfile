@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY Templates ./Templates
 COPY Templates_AZ ./Templates_AZ
+COPY Templates_RU_Text ./Templates_RU_Text
 COPY fonts /usr/local/share/fonts/ey/
 RUN fc-cache -f -v | cat
 COPY Template_Certificates.xlsx ./
