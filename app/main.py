@@ -119,6 +119,10 @@ def ui():
                         <input type="radio" id="regionAz" name="region" value="az">
                         <label for="regionAz">AZ</label>
                     </div>
+                    <div class="radio-item">
+                        <input type="radio" id="regionRuText" name="region" value="ru_text">
+                        <label for="regionRuText">RU (текст)</label>
+                    </div>
                 </div>
             </div>
 
@@ -300,11 +304,13 @@ app.add_middleware(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates"))
 TEMPLATES_DIR_AZ = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates_AZ"))
+TEMPLATES_DIR_RU_TEXT = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates_RU_Text"))
 
-# ru -> Templates, az -> Templates_AZ (Баку)
+# ru -> Templates, az -> Templates_AZ (Баку), ru_text -> Templates_RU_Text
 TEMPLATES_DIRS: Dict[str, str] = {
     "ru": TEMPLATES_DIR,
     "az": TEMPLATES_DIR_AZ,
+    "ru_text": TEMPLATES_DIR_RU_TEXT,
 }
 DEFAULT_REGION = "ru"
 
@@ -942,7 +948,7 @@ def _parse_uploaded_table(data: bytes, filename: str) -> List[Dict[str, str]]:
 async def generate(
     csv_file: UploadFile = File(...),
     mode: str = Form(...),                  # print | online
-    region: str = Form(DEFAULT_REGION),     # ru | az
+    region: str = Form(DEFAULT_REGION),     # ru | az | ru_text
     job_id: Optional[str] = Form(None),
 ):
     try:
@@ -1069,7 +1075,7 @@ async def generate(
 async def generate_async(
     csv_file: UploadFile = File(...),
     mode: str = Form(...),                  # print | online
-    region: str = Form(DEFAULT_REGION),     # ru | az
+    region: str = Form(DEFAULT_REGION),     # ru | az | ru_text
     job_id: Optional[str] = Form(None),
 ):
     try:

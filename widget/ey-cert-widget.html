@@ -1,0 +1,270 @@
+<!-- EY Certificates Generator Widget (SSE + real progress) -->
+<div id="ey-cert" style="font-family:Inter,Arial,sans-serif; max-width:720px; margin:40px auto;">
+  <div style="background:#fff;border:1px solid #e6e6e6;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.06);padding:28px;">
+    <h2 style="margin:0 0 16px;font-size:26px;line-height:1.25;">Генератор сертификатов</h2>
+
+    <div style="margin:18px 0;">
+      <label style="display:block;font-weight:600;margin:0 0 8px;">Загрузите Excel</label>
+      <input id="ey-file" type="file" accept=".xlsx,.xls" style="width:100%;padding:12px;border:1px solid #d9d9d9;border-radius:10px;background:#fafafa;" data-label="Загрузить файл">
+      <div id="ey-file-info" style="margin-top:6px;color:#777;font-size:13px;">Поддержка .xlsx / .xls (UTF-8)</div>
+      <button id="ey-sample" type="button" style="margin-top:10px;background:#FFE600;color:#000000;border:1px solid #dfe5ff;border-radius:10px;padding:10px 16px;font-weight:600;cursor:pointer;">
+        Скачать шаблон Excel
+      </button>
+    </div>
+
+    <div style="margin:18px 0;">
+      <label style="display:block;font-weight:600;margin:0 0 10px;">Версия шаблона</label>
+      <label style="margin-right:16px;"><input type="radio" name="ey-region" value="ru" checked> RU</label>
+      <label style="margin-right:16px;"><input type="radio" name="ey-region" value="az"> AZ</label>
+      <label><input type="radio" name="ey-region" value="ru_text"> RU (текст)</label>
+    </div>
+
+    <div style="margin:18px 0;">
+      <label style="display:block;font-weight:600;margin:0 0 10px;">Выберите формат сертификата</label>
+      <label style="margin-right:16px;"><input type="radio" name="ey-mode" value="print" checked> Сертификат под печать</label>
+      <label><input type="radio" name="ey-mode" value="online"> Сертификат для онлайн-участников (PDF с дизайном)</label>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;margin:18px 0;flex-wrap:wrap;">
+      <button id="ey-submit" style="flex:0 0 auto;background:#FFE600;color:#000000;border:none;border-radius:10px;padding:12px 18px;font-weight:600;cursor:pointer;">
+        Сгенерировать
+      </button>
+      <div id="ey-spinner" style="display:none;margin-left:10px;width:18px;height:18px;border:2px solid #e5e7eb;border-top-color:#21409A;border-radius:50%;animation:ey-spin 1s linear infinite;"></div>
+    </div>
+
+    <!-- Реальный прогресс -->
+    <div id="ey-progress-wrap" style="display:none;margin:12px 0;">
+      <div style="height:10px;background:#f0f2f5;border-radius:999px;overflow:hidden;position:relative;">
+        <div id="ey-progress" style="height:10px;background:#21409A;width:0%;transition:width .25s;"></div>
+      </div>
+      <div id="ey-progress-info" style="margin-top:8px;color:#555;font-size:14px;display:flex;justify-content:space-between;">
+        <span id="ey-progress-text">—</span>
+        <span id="ey-progress-percent">0%</span>
+      </div>
+    </div>
+
+    <div id="ey-status" style="display:none;margin-top:12px;padding:10px;border-radius:10px;font-size:14px;"></div>
+
+    <div style="margin-top:16px;color:#777;font-size:14px;line-height:1.5;">
+      <strong>Требуемые колонки:</strong> Имя, Фамилия, Название тренинга, Даты, ID, Город, (опц.) Страна
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes ey-spin {to{transform:rotate(360deg)}}
+</style>
+
+<script>
+(function(){
+  const API_BASE = 'https://certificates-generator-ard1.onrender.com';
+
+  const elFile = document.getElementById('ey-file');
+  const elFileInfo = document.getElementById('ey-file-info');
+  const elSubmit = document.getElementById('ey-submit');
+  const elSpinner = document.getElementById('ey-spinner');
+  const elStatus = document.getElementById('ey-status');
+  const elProgressWrap = document.getElementById('ey-progress-wrap');
+  const elProgress = document.getElementById('ey-progress');
+  const elProgressText = document.getElementById('ey-progress-text');
+  const elProgressPercent = document.getElementById('ey-progress-percent');
+  const elSample = document.getElementById('ey-sample');
+
+  fetch(url('/health')).catch(()=>{});
+
+  elFile.addEventListener('change', () => {
+    if (elFile.files.length) {
+      const f = elFile.files[0];
+      elFileInfo.textContent = `Выбран: ${f.name} • ${(f.size/1024).toFixed(1)} KB`;
+      elFileInfo.style.color = '#444';
+    } else {
+      elFileInfo.textContent = 'Поддержка .xlsx / .xls (UTF-8)';
+      elFileInfo.style.color = '#777';
+    }
+  });
+
+  elSample.addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = url('/sample-excel');
+    a.download = 'Template_Certificates.xlsx';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  });
+
+  function setStatus(msg, type){
+    elStatus.style.display = msg ? 'block' : 'none';
+    elStatus.textContent = msg || '';
+    if (!type){ elStatus.style.background=''; elStatus.style.color=''; elStatus.style.border=''; return; }
+    elStatus.style.background = type==='error' ? '#fde8e8' : '#eaf7ea';
+    elStatus.style.color = type==='error' ? '#9b1c1c' : '#1b6b2a';
+    elStatus.style.border = '1px solid ' + (type==='error' ? '#facdcd' : '#c8ebd0');
+  }
+
+  function setLoading(on){
+    elSubmit.disabled = on;
+    elSpinner.style.display = on ? 'inline-block' : 'none';
+    elProgressWrap.style.display = on ? 'block' : 'none';
+    if (!on){ setProgress(0); setProgressText('—'); }
+  }
+
+  function mode(){
+    const el = document.querySelector('input[name="ey-mode"]:checked');
+    return el ? el.value : 'print';
+  }
+
+  function region(){
+    const el = document.querySelector('input[name="ey-region"]:checked');
+    return el ? el.value : 'ru';
+  }
+
+  function setProgress(p){
+    const pct = Math.max(0, Math.min(100, Math.round(p||0)));
+    elProgress.style.width = pct + '%';
+    elProgressPercent.textContent = pct + '%';
+  }
+  function setProgressText(t){ elProgressText.textContent = t || ''; }
+
+  function url(path){ return (API_BASE || '') + path; }
+  function uuid(){ return (crypto && crypto.randomUUID) ? crypto.randomUUID() : `job-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+
+  elSubmit.addEventListener('click', async () => {
+    try{
+      setStatus('', '');
+      if (!elFile.files.length){ setStatus('Пожалуйста, выберите файл Excel', 'error'); return; }
+
+      const jobId = uuid();
+      const fd = new FormData();
+      fd.append('csv_file', elFile.files[0]);
+      fd.append('mode', mode());
+      fd.append('region', region());
+      fd.append('job_id', jobId);
+
+      const es = openSSE(jobId);
+      setLoading(true);
+
+      await uploadWithProgress(url('/generate-async'), fd);
+
+      const fallbackTimer = setTimeout(()=>{
+        tryDownload(jobId);
+      }, 120000);
+
+      es.onclose = () => clearTimeout(fallbackTimer);
+
+    } catch(err){
+      setLoading(false);
+      const msg = err?.name === 'AbortError' ? 'Превышено время ожидания. Попробуйте ещё раз.' : (err?.message || String(err));
+      setStatus(`Ошибка: ${msg}`, 'error');
+    }
+  });
+
+  function openSSE(jobId){
+    const es = new EventSource(url(`/progress/${jobId}`));
+    let lastStage = 'init';
+
+    es.onmessage = (ev) => {
+      try{
+        const data = JSON.parse(ev.data||'{}');
+        lastStage = data.stage || lastStage;
+        if (typeof data.percent === 'number') setProgress(data.percent);
+        const processed = data.processed||0, total = data.total||0;
+        const base = stageLabel(lastStage);
+        const extra = total ? ` (${processed}/${total})` : '';
+        setProgressText((data.message || base) + extra);
+
+        if (lastStage === 'done'){
+          tryDownload(jobId);
+          es.close();
+        }
+        if (lastStage === 'error'){
+          setLoading(false);
+          setStatus(data.message || 'Произошла ошибка', 'error');
+          es.close();
+        }
+      }catch(_e){}
+    };
+
+    es.onerror = () => {
+      setProgressText('Потеря соединения с прогрессом, продолжаем...');
+    };
+
+    return es;
+  }
+
+  function stageLabel(stage){
+    switch(stage){
+      case 'uploading': return 'Загрузка файла';
+      case 'processing': return 'Обработка строк';
+      case 'zipping': return 'Упаковка ZIP';
+      case 'done': return 'Готово';
+      default: return 'Подготовка';
+    }
+  }
+
+  function uploadWithProgress(endpoint, formData){
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', endpoint);
+      xhr.responseType = 'json';
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable){
+          const pct = Math.round((e.loaded / e.total) * 100);
+          setProgress(Math.min(pct, 99));
+          setProgressText(`Загрузка файла: ${pct}%`);
+        } else {
+          setProgressText('Загрузка файла...');
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300){
+          resolve(xhr.response);
+        } else {
+          const txt = typeof xhr.response === 'string' ? xhr.response : (xhr.response?.detail || 'Ошибка запуска');
+          reject(new Error(`Ошибка сервера: ${xhr.status} ${txt}`));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Сетевая ошибка при запросе'));
+
+      const ctrl = setTimeout(() => {
+        try { xhr.abort(); } catch(_){}
+        reject(new Error('Таймаут загрузки'));
+      }, 300000);
+
+      xhr.onreadystatechange = () => { if (xhr.readyState === 4) clearTimeout(ctrl); };
+
+      xhr.send(formData);
+    });
+  }
+
+  async function tryDownload(jobId){
+    try{
+      const res = await fetch(url(`/download/${jobId}`));
+      if (!res.ok){
+        retryDownload(jobId, 0);
+        return;
+      }
+      const blob = await res.blob();
+      const urlObj = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = urlObj; a.download = 'certificates.zip';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(urlObj);
+      setProgress(100);
+      setProgressText('Готово');
+      setStatus('Сертификаты успешно сгенерированы!', 'ok');
+      setLoading(false);
+    }catch(_e){
+      retryDownload(jobId, 0);
+    }
+  }
+
+  function retryDownload(jobId, attempt){
+    if (attempt > 100){
+      setLoading(false);
+      setStatus('Не удалось скачать результат. Попробуйте ещё раз.', 'error');
+      return;
+    }
+    setTimeout(()=>tryDownload(jobId).catch(()=>retryDownload(jobId, attempt+1)), 1200);
+  }
+})();
+</script>
