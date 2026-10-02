@@ -5,14 +5,22 @@
 
 ## Что нового
 
-Добавлена третья версия шаблона — **RU (текст)**, значение `ru_text`.
-На бэкенде она берёт файлы из папки `Templates_RU_Text`.
+Добавлены версии шаблонов с часами CPD/CPE:
+- **CPD|CPE (eng)**, значение `cpd_cpe_eng` (папка `Templates_CPD_CPE_eng`)
+- **CPD|CPE (ru)**, значение `cpd_cpe_ru` (папка `Templates_CPD_CPE_ru`)
+
+Также добавлена поддержка колонки `acad/CPD/CPE` в Excel/CSV, в которой указываются 3 числа через запятую (например, `8,12,3`):
+- 1-е число: `{{акад_время}}`
+- 2-е число: `{{CPD}}`
+- 3-е число: `{{CPE}}`
 
 | Кнопка в виджете | value | Папка шаблонов |
 |---|---|---|
 | RU | `ru` | `Templates` |
 | AZ | `az` | `Templates_AZ` |
 | RU (текст) | `ru_text` | `Templates_RU_Text` |
+| CPD\|CPE (eng) | `cpd_cpe_eng` | `Templates_CPD_CPE_eng` |
+| CPD\|CPE (ru) | `cpd_cpe_ru` | `Templates_CPD_CPE_ru` |
 
 ## Настройка
 

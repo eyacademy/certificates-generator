@@ -16,6 +16,8 @@ COPY app ./app
 COPY Templates ./Templates
 COPY Templates_AZ ./Templates_AZ
 COPY Templates_RU_Text ./Templates_RU_Text
+COPY Templates_CPD_CPE_eng ./Templates_CPD_CPE_eng
+COPY Templates_CPD_CPE_ru ./Templates_CPD_CPE_ru
 COPY fonts /usr/local/share/fonts/ey/
 RUN fc-cache -f -v | cat
 COPY Template_Certificates.xlsx ./

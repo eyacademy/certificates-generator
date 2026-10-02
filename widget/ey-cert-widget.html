@@ -14,9 +14,13 @@
 
     <div style="margin:18px 0;">
       <label style="display:block;font-weight:600;margin:0 0 10px;">Версия шаблона</label>
-      <label style="margin-right:16px;"><input type="radio" name="ey-region" value="ru" checked> RU</label>
-      <label style="margin-right:16px;"><input type="radio" name="ey-region" value="az"> AZ</label>
-      <label><input type="radio" name="ey-region" value="ru_text"> RU (текст)</label>
+      <div style="display:flex;flex-wrap:wrap;gap:10px 16px;">
+        <label><input type="radio" name="ey-region" value="ru" checked> RU</label>
+        <label><input type="radio" name="ey-region" value="az"> AZ</label>
+        <label><input type="radio" name="ey-region" value="ru_text"> RU (текст)</label>
+        <label><input type="radio" name="ey-region" value="cpd_cpe_eng"> CPD|CPE (eng)</label>
+        <label><input type="radio" name="ey-region" value="cpd_cpe_ru"> CPD|CPE (ru)</label>
+      </div>
     </div>
 
     <div style="margin:18px 0;">
@@ -46,7 +50,7 @@
     <div id="ey-status" style="display:none;margin-top:12px;padding:10px;border-radius:10px;font-size:14px;"></div>
 
     <div style="margin-top:16px;color:#777;font-size:14px;line-height:1.5;">
-      <strong>Требуемые колонки:</strong> Имя, Фамилия, Название тренинга, Даты, ID, Город, (опц.) Страна
+      <strong>Требуемые колонки:</strong> Имя, Фамилия, Название тренинга, Даты, ID, Город, (опц.) Страна, acad/CPD/CPE
     </div>
   </div>
 </div>

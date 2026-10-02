@@ -82,7 +82,7 @@ def ui():
         .form-group { margin-bottom: 20px; }
         label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
         input[type="file"] { width: 100%; padding: 10px; border: 2px dashed #ddd; border-radius: 5px; background: #fafafa; }
-        .radio-group { display: flex; gap: 20px; margin-top: 10px; }
+        .radio-group { display: flex; flex-wrap: wrap; gap: 12px 20px; margin-top: 10px; }
         .radio-item { display: flex; align-items: center; gap: 5px; }
         input[type="radio"] { margin: 0; }
         button { background: #007bff; color: white; border: none; padding: 12px 30px; border-radius: 5px; cursor: pointer; font-size: 16px; width: 100%; margin-top: 20px; }
@@ -106,6 +106,9 @@ def ui():
                 <label for="csvFile">Выберите файл (CSV или Excel):</label>
                 <input type="file" id="csvFile" name="csv_file" accept=".csv,.xlsx,.xls" required>
                 <div id="fileStatus">Файл не выбран</div>
+                <div style="margin-top: 8px;">
+                    <a href="/sample-excel" download="Template_Certificates.xlsx" style="color: #007bff; text-decoration: none; font-size: 14px; font-weight: bold;">Скачать шаблон Excel</a>
+                </div>
             </div>
 
             <div class="form-group">
@@ -122,6 +125,14 @@ def ui():
                     <div class="radio-item">
                         <input type="radio" id="regionRuText" name="region" value="ru_text">
                         <label for="regionRuText">RU (текст)</label>
+                    </div>
+                    <div class="radio-item">
+                        <input type="radio" id="regionCpdCpeEng" name="region" value="cpd_cpe_eng">
+                        <label for="regionCpdCpeEng">CPD|CPE (eng)</label>
+                    </div>
+                    <div class="radio-item">
+                        <input type="radio" id="regionCpdCpeRu" name="region" value="cpd_cpe_ru">
+                        <label for="regionCpdCpeRu">CPD|CPE (ru)</label>
                     </div>
                 </div>
             </div>
@@ -142,6 +153,10 @@ def ui():
 
             <button type="submit" id="generateBtn">Сгенерировать</button>
         </form>
+
+        <div style="margin-top: 20px; color: #666; font-size: 13px; line-height: 1.5;">
+            <strong>Требуемые колонки:</strong> Имя, Фамилия, Название тренинга, Даты, ID, Город, (опц.) Страна, acad/CPD/CPE
+        </div>
 
         <div class="progress" id="progress"><div class="progress-bar" id="progressBar"></div></div>
         <div class="progress-info" id="progressInfo"></div>
@@ -305,18 +320,23 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates"))
 TEMPLATES_DIR_AZ = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates_AZ"))
 TEMPLATES_DIR_RU_TEXT = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates_RU_Text"))
+TEMPLATES_DIR_CPD_CPE_ENG = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates_CPD_CPE_eng"))
+TEMPLATES_DIR_CPD_CPE_RU = os.path.abspath(os.path.join(BASE_DIR, "..", "Templates_CPD_CPE_ru"))
 
-# ru -> Templates, az -> Templates_AZ (Баку), ru_text -> Templates_RU_Text
+# ru -> Templates, az -> Templates_AZ (Баку), ru_text -> Templates_RU_Text,
+# cpd_cpe_eng -> Templates_CPD_CPE_eng, cpd_cpe_ru -> Templates_CPD_CPE_ru
 TEMPLATES_DIRS: Dict[str, str] = {
     "ru": TEMPLATES_DIR,
     "az": TEMPLATES_DIR_AZ,
     "ru_text": TEMPLATES_DIR_RU_TEXT,
+    "cpd_cpe_eng": TEMPLATES_DIR_CPD_CPE_ENG,
+    "cpd_cpe_ru": TEMPLATES_DIR_CPD_CPE_RU,
 }
 DEFAULT_REGION = "ru"
 
 def resolve_templates_dir(region: Optional[str]) -> str:
     """Возвращает папку шаблонов по региону. Неизвестное значение -> ru."""
-    key = (region or "").strip().lower()
+    key = (region or "").strip().lower().replace("-", "_")
     path = TEMPLATES_DIRS.get(key, TEMPLATES_DIRS[DEFAULT_REGION])
     if not os.path.isdir(path):
         raise ValueError(
@@ -401,8 +421,10 @@ def _clean_value(v) -> str:
 def _norm_key(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s*/\s*", "/", s)
     s = s.replace("ё", "е")
     return s
+
 
 KEY_ALIASES = {
     "first_name": {"имя", "name", "first name", "first_name", "имя/name", "name/имя"},
@@ -413,7 +435,48 @@ KEY_ALIASES = {
     "id":         {"id", "id/id", "идентификатор", "certificate id", "сертификат id"},
     "city":       {"город", "city", "город/city", "city/город"},
     "country":    {"страна", "country", "страна/country", "country/страна"},
+    "acad_cpd_cpe": {
+        "acad/cpd/cpe",
+        "acad_cpd_cpe",
+        "акад/cpd/cpe",
+        "акад/спд/спе",
+        "acad cpd cpe",
+        "cpd/cpe",
+    },
+    "acad_hours": {
+        "акад_время",
+        "акад время",
+        "академические часы",
+        "акад",
+        "acad",
+        "acad hours",
+        "academic hours",
+    },
+    "cpd": {"cpd", "cpd units"},
+    "cpe": {"cpe", "cpe hours"},
 }
+
+
+def parse_cpd_cpe(val: str) -> Tuple[str, str, str]:
+    """Парсит '8,12,3' или '8, 12, 3' в (acad, cpd, cpe)."""
+    if not val:
+        return "", "", ""
+    parts = [p.strip() for p in re.split(r"[,;]+", str(val).strip()) if p.strip()]
+    acad = parts[0] if len(parts) > 0 else ""
+    cpd = parts[1] if len(parts) > 1 else ""
+    cpe = parts[2] if len(parts) > 2 else ""
+    return acad, cpd, cpe
+
+
+def extract_training_hours(row: Dict[str, str]) -> Tuple[str, str, str]:
+    """Извлекает акад_время, CPD, CPE из строки (объединённая колонка или раздельные)."""
+    acad_raw = _get_field(row, "acad_cpd_cpe")
+    if acad_raw:
+        return parse_cpd_cpe(acad_raw)
+    acad = _get_field(row, "acad_hours")
+    cpd = _get_field(row, "cpd")
+    cpe = _get_field(row, "cpe")
+    return acad, cpd, cpe
 
 def _build_row_with_normalized_keys(row: Dict[str, str]) -> Dict[str, str]:
     out: Dict[str, str] = {}
@@ -1011,6 +1074,8 @@ async def generate(
                         if not os.path.exists(docx_path):
                             raise FileNotFoundError(f"Template not found: {docx_path}")
 
+                        acad, cpd, cpe = extract_training_hours(row)
+
                         context = format_dates_for_jinja(parsed)
                         context.update({
                             "Имя": first_name,
@@ -1019,6 +1084,9 @@ async def generate(
                             "Идентификатор": cert_id,
                             "Город": city or context.get("Город", "Москва"),
                             "Страна": country,
+                            "акад_время": acad,
+                            "CPD": cpd,
+                            "CPE": cpe,
                         })
 
                         def render_sync():
@@ -1140,6 +1208,8 @@ async def generate_async(
                                 if not os.path.exists(docx_path):
                                     raise FileNotFoundError(f"Template not found: {docx_path}")
 
+                                acad, cpd, cpe = extract_training_hours(row)
+
                                 context = format_dates_for_jinja(parsed)
                                 context.update({
                                     "Имя": first_name,
@@ -1148,6 +1218,9 @@ async def generate_async(
                                     "Идентификатор": cert_id,
                                     "Город": city or context.get("Город", "Москва"),
                                     "Страна": country,
+                                    "акад_время": acad,
+                                    "CPD": cpd,
+                                    "CPE": cpe,
                                 })
 
                                 def render_sync():
